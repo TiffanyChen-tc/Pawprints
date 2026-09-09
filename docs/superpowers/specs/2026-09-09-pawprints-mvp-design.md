@@ -291,7 +291,7 @@ POST /api/v1/events
 
 - Requires access JWT.
 - Body: title, category_id, intended local datetime, timezone, optional description, mood, location_name, latitude, longitude.
-- Event Service verifies category belongs to current user, validates time/location/mood/title/description limits, derives occurred_at and local_date.
+- Event Service verifies that category_id belongs to the authenticated user, validates time/location/mood/title/description limits, derives occurred_at and local_date.
 - Success: 201, Event JSON and ETag.
 - Errors: 404 resource_not_found for foreign/missing category, 422 validation_failed.
 - After successful creation, Event Service best-effort calls Analytics invalidation for the current user.
@@ -322,6 +322,7 @@ PATCH /api/v1/events/{event_id}
 
 - Requires access JWT and If-Match version ETag, formatted as a quoted integer such as If-Match: "1".
 - Partial update; resulting Event must satisfy invariants. Required fields cannot be cleared.
+- If category_id is supplied, Event Service verifies that the referenced Category belongs to the authenticated user before applying the update.
 - If occurrence time/timezone changes, recompute occurred_at and local_date.
 - Atomic update scoped by id, user_id, expected version; increments version.
 - After successful mutation, Event Service best-effort calls Analytics invalidation.
@@ -347,13 +348,14 @@ POST /api/v1/media/events/{event_id}
 - Limits: max 5 images per Event, max 5 MB per file, decoded-pixel limit around 30 MP configurable.
 - Decode with Pillow, reject corrupt/non-image/unsupported/animated/resource-exhaustion images, apply EXIF orientation, re-encode to strip metadata, preserve image family where practical, generate storage keys.
 - Count/order insertion is concurrency-safe with short per-Event DB serialization and UNIQUE(event_id, display_order).
-- Success: 201, list of media metadata ordered by display order.
+- Success: 201, list of public media metadata ordered by display order.
 - Errors: 404 resource_not_found, 409 media_limit_exceeded, 413 payload_too_large, 415 unsupported_media_type, 422 invalid_image.
 
 GET /api/v1/media/events/{event_id}
 
 - Requires access JWT and Event ownership verification.
-- Returns media metadata ordered by display_order ASC, then deterministic secondary ordering.
+- Returns public media metadata ordered by display_order ASC, then deterministic secondary ordering.
+- Public Media JSON responses expose only safe fields such as media id, event id if useful, MIME type, normalized file size, display_order, and created_at. storage_key and local filesystem paths are internal Media Service implementation details and must never be exposed publicly.
 
 GET /api/v1/media/{media_id}
 
@@ -374,7 +376,8 @@ DELETE /api/v1/media/{media_id}
 GET /api/v1/analytics/activity-counts
 
 - Requires access JWT.
-- Query params: inclusive local_date range or supported range presets such as last 30 days/current month, optional category_id, grouping such as none/week/month.
+- Query params: explicit inclusive local_date start_date and end_date, optional category_id, grouping such as none/week/month.
+- Frontend UI presets such as current month and last 30 days resolve to explicit start_date/end_date values using the browser's current local calendar context. The Analytics API treats that explicit range as authoritative and does not infer timezone-dependent presets or require a user timezone profile for the MVP.
 - Weekly buckets use ISO weeks starting Monday. Monthly buckets use calendar months in the Event local_date calendar.
 - Uses current user's UUID from JWT to scope every query.
 - Reads only approved Event-owned analytics views using read-only DB credentials.
@@ -449,7 +452,9 @@ Concurrent upload protection is local to Media Service. Expensive image decode/v
 
 Storage-write and metadata consistency must be handled explicitly. A storage-write failure must not leave committed metadata. If normalized file storage succeeds but the later metadata transaction fails, Media Service should best-effort delete the newly written files before returning failure.
 
-Local filesystem media storage is behind a storage interface, conceptually a LocalFileStorage adapter. Future storage may use private S3-compatible object storage and short-lived presigned upload/download URLs.
+Local filesystem media storage is behind a storage interface, conceptually a LocalFileStorage adapter. The MVP storage path must be persistent outside the ephemeral container filesystem, preferably a Docker named volume or an explicitly ignored host data directory. Normal docker compose down / dev.ps1 down must not delete active Media storage, just as it must not delete PostgreSQL data. Any command that removes database or media volumes must be explicitly destructive and clearly named.
+
+Future storage may use private S3-compatible object storage and short-lived presigned upload/download URLs.
 
 ## 14. Deletion Orchestration
 
@@ -682,6 +687,7 @@ P0 security regression tests verify:
 
 - User B cannot read/update/delete User A's Events.
 - User B cannot create an Event using User A's category_id.
+- User B cannot PATCH one of User B's Events to reference User A's category_id.
 - User B cannot modify User A's Categories.
 - User B cannot upload Media to User A's Event.
 - User B cannot list/retrieve/delete User A's Media.
