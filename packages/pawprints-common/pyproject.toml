@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pawprints-common"
+version = "0.1.0"
+description = "Shared Pawprints security and protocol primitives."
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi",
+  "pyjwt[crypto]",
+]
+
+[project.optional-dependencies]
+dev = [
+  "cryptography",
+  "httpx",
+  "pytest",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pawprints_common*"]
+
+[tool.pytest.ini_options]
+addopts = "-p no:cacheprovider"
