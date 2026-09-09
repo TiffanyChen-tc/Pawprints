@@ -48,9 +48,9 @@ Completeness of this spec does not mean every possible feature has equal priorit
 - Mood: nullable fixed enum: great, good, neutral, low, bad.
 - Location: inline Event fields, explicit user input only, no EXIF-derived location.
 - Markdown: restricted client-side Markdown rendering; raw HTML disabled.
-- Media: Media Service owns metadata/storage, direct multipart upload, private retrieval, JPEG/PNG/WebP only, max 5 images/event, max 5 MB/file, static images only.
+- Media: Media Service owns metadata/local filesystem media storage, direct multipart upload, private Bearer-protected retrieval, JPEG/PNG/WebP only, max 5 images/event, max 5 MB/file, static images only.
 - Analytics: category-based activity frequency using read-only PostgreSQL access to approved Event-owned views; Redis caches user-scoped aggregate results.
-- Redis: analytics result caching only, per-user cache version plus TTL and best-effort invalidation.
+- Redis: degradable analytics result caching only, per-user cache version plus TTL and best-effort invalidation.
 - Observability: privacy-safe structured logs, request IDs, health/readiness, Prometheus metrics, one provisioned Grafana dashboard.
 - Testing: backend-heavy automated tests, P0 security regression tests, Docker Compose smoke verification.
 - Developer workflow: PowerShell scripts/dev.ps1 task wrapper.
@@ -102,7 +102,7 @@ Auth Service owns users, password hashing, access-token issuance, refresh-token 
 
 Event Service owns events, categories, event lifecycle, event/category authorization, timezone conversion, local_date, search, optimistic locking, category normalization, analytics-facing database views, and Event deletion orchestration.
 
-Media Service owns media metadata, private local storage abstraction, upload validation, image decoding/re-encoding, EXIF stripping, display order, media retrieval, individual media deletion, and idempotent cleanup for an Event. Media Service verifies Event ownership through Event Service for upload/list/retrieve/delete paths that require user ownership context.
+Media Service owns media metadata, a private local filesystem media storage abstraction such as a LocalFileStorage adapter, upload validation, image decoding/re-encoding, EXIF stripping, display order, media retrieval, individual media deletion, and idempotent cleanup for an Event. Media Service verifies Event ownership through Event Service for upload/list/retrieve/delete paths that require user ownership context.
 
 Analytics Service owns analytics API behavior and Redis analytics caching. For MVP, it reads Event-owned analytics views through a least-privilege read-only PostgreSQL role. It does not write Event data and does not receive broad access to diary descriptions. Long term, Analytics should move to its own replicated read model populated through outbox/event-driven mechanisms.
 
@@ -126,7 +126,7 @@ auth.refresh_tokens:
 
 - id: UUID primary key.
 - user_id: user UUID.
-- token_hash: cryptographic hash of opaque refresh credential.
+- token_hash: SHA-256 hash of the opaque high-entropy refresh credential.
 - created_at, expires_at, revoked_at.
 - replaced_by_token_id: optional rotation lineage.
 
@@ -148,8 +148,8 @@ events.events:
 - id: UUID primary key.
 - user_id: owner UUID from JWT subject.
 - category_id: required FK to Event Service-owned category.
-- title: required, non-blank, max around 120 characters.
-- description: nullable Markdown source text.
+- title: required, non-blank, maximum 120 characters.
+- description: nullable Markdown source text, maximum 10,000 characters by default and configurable.
 - mood: nullable enum: great, good, neutral, low, bad.
 - location_name: nullable text.
 - latitude: nullable coordinate, -90 to 90.
@@ -195,14 +195,14 @@ Access JWTs:
 - Lifetime: 15 minutes.
 - Stateless; not persisted or blacklisted in MVP.
 - Claims: minimal sub user UUID plus standard issuer/audience/expiry claims.
-- Prefer asymmetric signing: Auth owns private key; Event/Media/Analytics receive only public verification key. HS256 is acceptable fallback only if asymmetric setup threatens the MVP timeline.
+- Algorithm: RS256 asymmetric signing for the MVP. Auth Service owns the private signing key. Event, Media, and Analytics Services receive only the public verification key. Local setup generates the development key pair.
 - Small clock-skew tolerance only.
 
 Refresh tokens:
 
 - Opaque high-entropy random values, not JWTs.
 - Delivered only through HttpOnly cookie.
-- Stored only as cryptographic hashes in PostgreSQL.
+- Stored only as SHA-256 hashes in PostgreSQL.
 - Rotated atomically on every successful refresh.
 - Single-use: two concurrent refresh attempts with the same old token cannot both succeed.
 - Absolute login-session lifetime: 7 days from login/register. Rotated replacements inherit remaining expiry; they do not extend the session.
@@ -213,6 +213,8 @@ Register/login/refresh return access_token, token_type Bearer, expires_in 900, a
 Refresh cookie policy: HttpOnly, Secure in production/TLS, configurable false for localhost HTTP, preferably SameSite=Strict, path-scoped to /api/v1/auth where practical.
 
 POST /api/v1/auth/refresh restores frontend runtime auth state after page reload. The frontend must single-flight concurrent refresh attempts inside one runtime. Cross-tab coordination is future work. Refresh/logout are POST-only and should perform simple Origin validation because they rely on automatically attached cookies.
+
+Access JWTs live only in frontend runtime memory. They must never be persisted in browser localStorage, sessionStorage, IndexedDB, URLs, or query strings.
 
 ## 9. Public API Contracts
 
@@ -259,6 +261,8 @@ GET /api/v1/auth/me
 
 ### Event and Category Service
 
+FastAPI route registration must keep static Event routes such as /events/timeline and /events/search unambiguous. Register static routes before /events/{event_id}, and type event_id as UUID, so the literal path segments "timeline" and "search" cannot be parsed or reported as malformed Event IDs.
+
 GET /api/v1/categories
 
 - Requires access JWT.
@@ -275,20 +279,22 @@ POST /api/v1/categories
 
 PATCH /api/v1/categories/{category_id}
 
-- Requires access JWT and If-Match version ETag.
+- Requires access JWT and If-Match version ETag, formatted as a quoted integer such as If-Match: "1".
 - Body: name.
 - Atomic update scoped by id, user_id, and expected version; increments version.
 - Success: 200, category JSON and new ETag.
 - Errors: 404 resource_not_found for missing/foreign, 412 stale_version, 409 category_name_exists, 422 validation_failed.
+- After successful rename, Event Service best-effort calls Analytics invalidation for the current user.
 - Category deletion is not exposed in MVP.
 
 POST /api/v1/events
 
 - Requires access JWT.
 - Body: title, category_id, intended local datetime, timezone, optional description, mood, location_name, latitude, longitude.
-- Event Service verifies category belongs to current user, validates time/location/mood/title, derives occurred_at and local_date.
+- Event Service verifies category belongs to current user, validates time/location/mood/title/description limits, derives occurred_at and local_date.
 - Success: 201, Event JSON and ETag.
 - Errors: 404 resource_not_found for foreign/missing category, 422 validation_failed.
+- After successful creation, Event Service best-effort calls Analytics invalidation for the current user.
 
 GET /api/v1/events/{event_id}
 
@@ -306,7 +312,7 @@ GET /api/v1/events/timeline?date=YYYY-MM-DD
 GET /api/v1/events/search
 
 - Requires access JWT.
-- Query params: keyword, date, date range, category_id, mood, location, pagination.
+- Query params: keyword, date, inclusive local_date range, category_id, mood, location, pagination.
 - Keyword uses parameterized SQLAlchemy ILIKE over title, description Markdown source, and location_name.
 - Category remains structured category_id, not text search.
 - Queries are user-scoped at the database level.
@@ -314,7 +320,7 @@ GET /api/v1/events/search
 
 PATCH /api/v1/events/{event_id}
 
-- Requires access JWT and If-Match version ETag.
+- Requires access JWT and If-Match version ETag, formatted as a quoted integer such as If-Match: "1".
 - Partial update; resulting Event must satisfy invariants. Required fields cannot be cleared.
 - If occurrence time/timezone changes, recompute occurred_at and local_date.
 - Atomic update scoped by id, user_id, expected version; increments version.
@@ -324,8 +330,8 @@ PATCH /api/v1/events/{event_id}
 
 DELETE /api/v1/events/{event_id}
 
-- Requires access JWT and If-Match version ETag.
-- Event Service verifies ownership/version, calls Media cleanup, then performs final version-conditional hard delete.
+- Requires access JWT and If-Match version ETag, formatted as a quoted integer such as If-Match: "1".
+- Event Service validates the end-user JWT, verifies ownership/version, calls Media cleanup, then performs final version-conditional hard delete.
 - Success: 204.
 - Errors: 404 resource_not_found, 412 stale_version, 5xx internal_dependency_failed if media cleanup fails.
 - Analytics invalidation after successful delete is best-effort and does not roll back deletion.
@@ -368,10 +374,12 @@ DELETE /api/v1/media/{media_id}
 GET /api/v1/analytics/activity-counts
 
 - Requires access JWT.
-- Query params: date range or supported range presets such as last 30 days/current month, optional category_id, grouping such as none/week/month.
+- Query params: inclusive local_date range or supported range presets such as last 30 days/current month, optional category_id, grouping such as none/week/month.
+- Weekly buckets use ISO weeks starting Monday. Monthly buckets use calendar months in the Event local_date calendar.
 - Uses current user's UUID from JWT to scope every query.
 - Reads only approved Event-owned analytics views using read-only DB credentials.
 - Uses Redis user-scoped versioned cache keys.
+- If Redis is unavailable but PostgreSQL is healthy, Analytics bypasses the cache and queries the read-only analytics view directly, while recording degraded cache state through safe logs and metrics.
 - Success: 200, category counts and optional buckets with category_id/current category name/count.
 
 ## 10. Internal Service APIs and Auth
@@ -425,7 +433,7 @@ Services do not trust arbitrary identity headers from clients. Public FastAPI en
 
 Mutable Events and Categories use integer version columns starting at 1. GET responses include both JSON version and an ETag representing that version.
 
-Update/delete operations require If-Match. Mutations are atomic, scoped by id, user_id, and expected version, and successful updates increment version atomically. Stale owner mutations return 412 stale_version. Missing/foreign resources return 404 resource_not_found before revealing concurrency information.
+GET responses for single mutable resources include an ETag header formatted as the quoted integer version, such as ETag: "1". Update/delete operations require an If-Match header with the last observed quoted version, such as If-Match: "1". Missing If-Match should return 428 precondition_required where practical. Mutations are atomic, scoped by id, user_id, and expected version, and successful updates increment version atomically. Stale owner mutations return 412 stale_version. Missing/foreign resources return 404 resource_not_found before revealing concurrency information.
 
 Event DELETE performs the final database delete with the same expected version even if version was checked earlier before Media cleanup.
 
@@ -439,14 +447,16 @@ New uploads append after the current max display_order. Batch upload preserves m
 
 Concurrent upload protection is local to Media Service. Expensive image decode/validation should happen outside the short critical section where practical. The metadata transaction acquires a per-Event serialization mechanism such as a PostgreSQL transaction-level advisory lock keyed by event_id, recounts existing media, rejects batches exceeding 5 images, assigns consecutive display_order values, inserts metadata, and commits.
 
-LocalStorage is behind a storage interface. Future storage may use private S3-compatible object storage and short-lived presigned upload/download URLs.
+Storage-write and metadata consistency must be handled explicitly. A storage-write failure must not leave committed metadata. If normalized file storage succeeds but the later metadata transaction fails, Media Service should best-effort delete the newly written files before returning failure.
+
+Local filesystem media storage is behind a storage interface, conceptually a LocalFileStorage adapter. Future storage may use private S3-compatible object storage and short-lived presigned upload/download URLs.
 
 ## 14. Deletion Orchestration
 
 Event Service owns Event lifecycle and coordinates Event deletion:
 
-1. Gateway authenticates/forwards request.
-2. Event Service validates JWT, ownership, and expected If-Match version.
+1. Nginx routes and forwards the public DELETE request without making the authoritative authz decision.
+2. Event Service validates the end-user JWT, ownership, and expected If-Match version.
 3. Event Service calls internal Media cleanup endpoint.
 4. If cleanup fails, Event remains and deletion returns a retryable server failure.
 5. If cleanup succeeds, Event Service performs final version-conditional hard DELETE.
@@ -460,7 +470,7 @@ Hard delete means removal from active PostgreSQL rows, Media metadata, and activ
 Search lives in Event Service. It supports composable user-scoped filters:
 
 - keyword over title, description Markdown source, and location_name using SQLAlchemy-parameterized ILIKE.
-- specific date/date range using local_date.
+- specific date or inclusive date range using local_date.
 - category_id.
 - mood.
 - location_name match.
@@ -481,7 +491,9 @@ analytics:user:{user_id}:version = 4
 analytics:v1:user:{user_id}:ver:4:activity-counts:{filter_hash}
 ```
 
-Analytics cache TTL is configurable, default around 10 minutes. Event Service calls internal Analytics invalidation after event create/update/delete and category rename. Invalidation increments the user's cache version. Failures are logged and do not roll back Event mutations; TTL bounds staleness.
+Analytics cache TTL is configurable, default around 10 minutes. Event Service calls internal Analytics invalidation after successful event create/update/delete and category rename, after the authoritative database mutation succeeds. Invalidation increments the user's cache version. Failures are logged and do not roll back Event mutations; TTL bounds staleness.
+
+Redis is a degradable cache dependency. If Redis cache read/write is unavailable but PostgreSQL is healthy, Analytics bypasses Redis and queries the read-only analytics view directly. Analytics readiness should not fail solely because Redis is unavailable when this fallback path works; it should report degraded cache state through privacy-safe logs and metrics.
 
 Redis keys and cached results must never leak across users.
 
@@ -499,6 +511,8 @@ Auth routes:
 - /register
 
 Timeline is the default authenticated landing view. It defaults to Today, allows selecting another local_date, and provides previous day/today/next day navigation. Timeline entries are vertical and chronological. Compact entries show time, title, category, mood, and location. Expanding inline shows restricted-Markdown diary content, Media carousel, and edit/delete actions. "New Pawprint" is prominent.
+
+The Media carousel must preserve private Bearer-protected retrieval. A normal image src request cannot attach the runtime Authorization Bearer header, so the frontend API layer fetches image bytes from /api/v1/media/{media_id} with the access token, converts the response Blob to a URL.createObjectURL URL for rendering, and revokes object URLs when they are no longer needed. Media must not be made public merely to simplify image rendering.
 
 Search is a separate view with keyword/date range/category/mood/location filters and expandable result presentation where practical.
 
@@ -610,7 +624,7 @@ No cross-service DB foreign keys. Event.category_id may use a normal FK because 
 
 Commit .env.example with variable names, safe defaults, and obvious placeholders. Real .env and generated secrets/keys are ignored by Git. Root .env is used for Compose substitution, but containers receive only explicitly listed variables they need.
 
-JWT private keys, public keys, DB credentials, internal service tokens, cookie config, Redis config, and media limits are injected at runtime. Prefer generated key files for asymmetric JWTs, mounted read-only; do not embed multiline private keys in .env; do not copy secrets into Docker image layers.
+JWT private keys, public keys, DB credentials, internal service tokens, cookie config, Redis config, and media limits are injected at runtime. Local setup generates the RS256 development key pair. Prefer generated key files mounted read-only; do not embed multiline private keys in .env; do not copy secrets into Docker image layers.
 
 Services validate config at startup and fail fast. No hard-coded fallback secrets. Secrets must not appear in logs, exceptions, metrics labels, frontend bundles, or committed config. VITE_* variables are public browser config only.
 
@@ -622,7 +636,7 @@ MVP includes observability as part of the demo.
 
 - Structured privacy-safe logs: request ID, service, level, method, route template, status, latency, safe error/event codes.
 - X-Request-Id generated/forwarded by Nginx and propagated across service-to-service calls.
-- /healthz and /readyz endpoints.
+- /healthz and /readyz endpoints. Analytics /readyz should treat PostgreSQL/read-view availability as required, while Redis cache availability is degradable if direct PostgreSQL fallback works.
 - FastAPI services expose internal /metrics endpoints for Prometheus.
 - Prometheus scrapes over the internal Compose network.
 - Grafana and Prometheus may expose local host ports for demo.
@@ -662,19 +676,22 @@ Mandatory API/integration tests cover:
 - If-Match stale rejection.
 - Media upload/list/retrieval/delete.
 - Analytics aggregation and Redis cache behavior.
+- Analytics Redis-degraded fallback to read-only PostgreSQL when Redis is unavailable.
 
 P0 security regression tests verify:
 
 - User B cannot read/update/delete User A's Events.
+- User B cannot create an Event using User A's category_id.
 - User B cannot modify User A's Categories.
+- User B cannot upload Media to User A's Event.
 - User B cannot list/retrieve/delete User A's Media.
 - Analytics never aggregates another user's data.
 - Redis cached analytics cannot leak across users.
 - Authorization errors do not expose foreign resource/version details.
 
-Frontend tests are minimal: route guards, chronological Timeline rendering, entry expansion, basic Event-form validation if time allows. Server-side validation remains authoritative.
+Frontend component/unit tests are optional for day one. If time allows, focus only on route guards, chronological Timeline rendering, entry expansion, media Blob URL lifecycle, and basic Event-form validation. Server-side validation remains authoritative.
 
-Docker Compose smoke verification is mandatory: containers build/start, migrations apply, PostgreSQL/Redis healthy, frontend reaches APIs through Nginx, and the core register/login/create-event/timeline path works through the full stack. If time remains, add one Playwright happy path.
+Docker Compose smoke verification is mandatory: containers build/start, migrations apply, PostgreSQL/Redis are healthy in the normal demo stack, frontend reaches APIs through Nginx, and the core register/login/create-event/timeline path works through the full stack. If time remains, add one Playwright happy path.
 
 Use Superpowers TDD workflow for suitable implementation tasks: failing test first, verify red, implement, verify green, refactor.
 
@@ -685,7 +702,7 @@ Use scripts/dev.ps1 as the PowerShell-friendly task entry point:
 - setup: create/copy local config, generate missing JWT keys and development secrets, no seed data.
 - migrate: run Auth/Event/Media service-owned Alembic migration jobs; stop on failure.
 - up: start app and monitoring stack.
-- test: run backend tests and mandatory frontend tests.
+- test: run backend tests and any optional frontend tests that have been implemented.
 - smoke: verify running stack through public Nginx boundary.
 - seed: optional local demo seed through normal public APIs.
 - down: stop stack without deleting volumes.
@@ -720,7 +737,7 @@ Out of one-day MVP:
 Future growth paths are documented but do not expand MVP scope:
 
 - Move schemas to independent databases or managed database instances.
-- Replace LocalStorage with private S3-compatible object storage and presigned flows.
+- Replace local filesystem media storage with private S3-compatible object storage and presigned flows.
 - Add transactional outbox/event-driven idempotent Media cleanup and Analytics read-model replication.
 - Add workload identity, mTLS, service-mesh identity, short-lived service credentials, and rotation.
 - Add rate limiting at Gateway for auth endpoints.
