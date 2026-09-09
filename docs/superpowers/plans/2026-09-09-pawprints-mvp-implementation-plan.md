@@ -15,7 +15,7 @@
 - Do not implement Future / MVP Non-Goal items from the spec.
 - Do not create a worktree for this implementation unless the user later asks for one.
 - Keep backend services deployable as separate containers under `services/auth`, `services/event`, `services/media`, and `services/analytics`.
-- Keep `packages/pawprints-common` limited to JWT verification, internal service auth, authenticated identity, request/error helpers, and focused tests.
+- Keep `packages/pawprints-common` limited to JWT verification, internal service auth, authenticated identity, request/error helpers, narrow request-context/observability primitives, and focused tests.
 - Use ordinary FastAPI `def` endpoints, synchronous SQLAlchemy Sessions, synchronous Alembic, reusable synchronous `httpx.Client` instances, and blocking Pillow image processing.
 - Use RS256 access JWTs only. Auth issues with private key; Event, Media, and Analytics verify with public key.
 - Use explicit JWT config consistently: `JWT_ISSUER=pawprints-auth`, `JWT_AUDIENCE=pawprints-api`, `ACCESS_TOKEN_TTL_MINUTES=15`.
@@ -34,6 +34,8 @@
 - Media public JSON must never expose `storage_key` or filesystem paths.
 - Prometheus/Grafana are part of MVP; metrics labels must be low-cardinality and privacy-safe.
 - Mandatory P0 security tests must be implemented early enough to guide service behavior, not as a final cosmetic pass.
+- RED/GREEN commands must fail or pass because of Pawprints behavior, not missing dependencies. Each task that introduces a Python or frontend package first creates dependency metadata and installs dependencies before running its RED tests.
+- PostgreSQL-specific behavior is tested against PostgreSQL, not SQLite. Integration tests use isolated test infrastructure such as `postgres-test` and `redis-test`, never the persistent demo/dev data volumes.
 
 ---
 
@@ -46,7 +48,8 @@ Create or modify these repository areas as tasks make them real:
 - `.gitignore`: ignored `.env`, generated keys, local secrets, local data directory if used, Python/Node build artifacts.
 - `README.md`: transparent PowerShell and Docker Compose workflow.
 - `scripts/dev.ps1`: `setup`, `migrate`, `up`, `test`, `smoke`, `seed`, `down`, optional `start`/`demo`, explicit destructive reset only if added.
-- `infra/postgres/init/001-bootstrap.sql`: database schemas, roles, grants, read-only Analytics view grants.
+- `infra/postgres/init/001-bootstrap.sh`: database schemas, roles, and basic grants only.
+- `infra/nginx/Dockerfile`: one public Nginx gateway image that builds and serves the React app and proxies `/api/v1/*`.
 - `infra/nginx/nginx.conf`: same-origin frontend serving, `/api/v1/*` routing, header stripping, request IDs, JSON 413 response.
 - `infra/prometheus/prometheus.yml`: internal service scrape targets.
 - `infra/grafana/provisioning/datasources/prometheus.yml`: Prometheus datasource.
@@ -62,9 +65,21 @@ Create or modify these repository areas as tasks make them real:
 - `services/event/app/*`, `services/event/tests/*`, `services/event/migrations/*`, `services/event/alembic.ini`, `services/event/Dockerfile`, `services/event/pyproject.toml`
 - `services/media/app/*`, `services/media/tests/*`, `services/media/migrations/*`, `services/media/alembic.ini`, `services/media/Dockerfile`, `services/media/pyproject.toml`
 - `services/analytics/app/*`, `services/analytics/tests/*`, `services/analytics/Dockerfile`, `services/analytics/pyproject.toml`
-- `apps/web/package.json`, `apps/web/vite.config.ts`, `apps/web/src/*`, `apps/web/Dockerfile`, `apps/web/nginx.conf`
+- `apps/web/package.json`, `apps/web/package-lock.json`, `apps/web/vite.config.ts`, `apps/web/src/*`
 - `tests/smoke/pawprints_smoke.py`: whole-stack smoke through Nginx.
 - `demo/seed.py` and optional `demo/assets/*`: API-driven seed data only.
+
+---
+
+## Dependency and Test Environment Contract
+
+- Each Python package/service has its own `pyproject.toml` with runtime and test dependencies. Test extras include `pytest`, `pytest-cov`, `httpx`, and service-specific helpers.
+- Every backend service image uses the repository root as Docker build context so it can install `packages/pawprints-common` as an internal path dependency without publishing it.
+- Local Python RED/GREEN commands run after installing dependencies with the service/package Python interpreter, for example `python -m pip install -e packages/pawprints-common[dev]` for common package work.
+- Service integration tests that need PostgreSQL, transactions, views, advisory locks, or concurrency run against `postgres-test`, not SQLite and not the persistent demo database.
+- Analytics cache tests use `redis-test` when Redis behavior matters. Pure cache-key formatting tests may run without Redis.
+- Frontend RED/GREEN commands run after `npm ci` in `apps/web`, and `package-lock.json` is committed.
+- `dev.ps1 test` starts isolated test infrastructure, runs migrations against the test database, executes backend/common tests, executes frontend tests that exist, and tears down test containers/volumes for that test run. It must not mutate demo/user data.
 
 ---
 
@@ -78,7 +93,7 @@ Create or modify these repository areas as tasks make them real:
 - Modify: `.gitignore`
 - Create: `README.md`
 - Create: `scripts/dev.ps1`
-- Create: `infra/postgres/init/001-bootstrap.sql`
+- Create: `infra/postgres/init/001-bootstrap.sh`
 
 **Interfaces:**
 - Produces: directory layout, config variable names, PowerShell task entrypoint, PostgreSQL schemas/roles.
@@ -139,6 +154,7 @@ JWT_PUBLIC_KEY_PATH=/run/secrets/jwt_public.pem
 COOKIE_SECURE=false
 COOKIE_SAMESITE=strict
 COOKIE_DOMAIN=
+AUTH_ALLOWED_ORIGINS=http://localhost:8080,http://localhost:5173
 
 AUTH_DATABASE_URL=postgresql+psycopg://pawprints_auth_rw:CHANGE_ME@postgres:5432/pawprints
 EVENT_DATABASE_URL=postgresql+psycopg://pawprints_event_rw:CHANGE_ME@postgres:5432/pawprints
@@ -162,32 +178,118 @@ MEDIA_INTERNAL_TOKEN=CHANGE_ME_GENERATED
 ANALYTICS_INTERNAL_TOKEN=CHANGE_ME_GENERATED
 ```
 
-- [ ] **Step 4: Add PostgreSQL bootstrap**
+- [ ] **Step 4: Add PostgreSQL bootstrap shell wrapper**
 
-`infra/postgres/init/001-bootstrap.sql` creates schemas and least-privilege roles using variables supplied by Compose initialization. Keep grants narrow:
+`infra/postgres/init/001-bootstrap.sh` creates schemas and least-privilege roles deterministically during PostgreSQL first initialization. It invokes `psql` with explicit variables supplied by Compose environment. It creates schemas/roles/basic grants only; Event-owned analytics views and SELECT grants are created later by Event migrations after the view exists.
 
-```sql
+```sh
+#!/usr/bin/env sh
+set -eu
+
+: "${POSTGRES_DB:?POSTGRES_DB is required}"
+: "${POSTGRES_USER:?POSTGRES_USER is required}"
+: "${AUTH_DB_PASSWORD:?AUTH_DB_PASSWORD is required}"
+: "${EVENT_DB_PASSWORD:?EVENT_DB_PASSWORD is required}"
+: "${MEDIA_DB_PASSWORD:?MEDIA_DB_PASSWORD is required}"
+: "${ANALYTICS_DB_PASSWORD:?ANALYTICS_DB_PASSWORD is required}"
+
+psql -v ON_ERROR_STOP=1 \
+  --username "$POSTGRES_USER" \
+  --dbname "$POSTGRES_DB" \
+  -v auth_db_password="$AUTH_DB_PASSWORD" \
+  -v event_db_password="$EVENT_DB_PASSWORD" \
+  -v media_db_password="$MEDIA_DB_PASSWORD" \
+  -v analytics_db_password="$ANALYTICS_DB_PASSWORD" <<'SQL'
 CREATE SCHEMA IF NOT EXISTS auth;
 CREATE SCHEMA IF NOT EXISTS events;
 CREATE SCHEMA IF NOT EXISTS media;
 CREATE SCHEMA IF NOT EXISTS analytics;
 
-CREATE ROLE pawprints_auth_rw LOGIN PASSWORD :'AUTH_DB_PASSWORD';
-CREATE ROLE pawprints_event_rw LOGIN PASSWORD :'EVENT_DB_PASSWORD';
-CREATE ROLE pawprints_media_rw LOGIN PASSWORD :'MEDIA_DB_PASSWORD';
-CREATE ROLE pawprints_analytics_ro LOGIN PASSWORD :'ANALYTICS_DB_PASSWORD';
+CREATE ROLE pawprints_auth_rw LOGIN PASSWORD :'auth_db_password';
+CREATE ROLE pawprints_event_rw LOGIN PASSWORD :'event_db_password';
+CREATE ROLE pawprints_media_rw LOGIN PASSWORD :'media_db_password';
+CREATE ROLE pawprints_analytics_ro LOGIN PASSWORD :'analytics_db_password';
 
 GRANT USAGE, CREATE ON SCHEMA auth TO pawprints_auth_rw;
 GRANT USAGE, CREATE ON SCHEMA events TO pawprints_event_rw;
 GRANT USAGE, CREATE ON SCHEMA media TO pawprints_media_rw;
 GRANT USAGE ON SCHEMA events TO pawprints_analytics_ro;
+SQL
 ```
 
-If PostgreSQL init variable substitution is not available with plain `.sql`, replace this with a `.sh` wrapper in the same directory that calls `psql -v AUTH_DB_PASSWORD=...` and keeps the same SQL body.
+- [ ] **Step 5: Add initial Compose infrastructure and isolated test dependencies**
 
-- [ ] **Step 5: Add initial `scripts/dev.ps1` command parser**
+Create `compose.yaml` with persistent demo infrastructure and ephemeral test infrastructure:
 
-Create a PowerShell script with explicit cases:
+```yaml
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
+      AUTH_DB_PASSWORD: ${AUTH_DB_PASSWORD}
+      EVENT_DB_PASSWORD: ${EVENT_DB_PASSWORD}
+      MEDIA_DB_PASSWORD: ${MEDIA_DB_PASSWORD}
+      ANALYTICS_DB_PASSWORD: ${ANALYTICS_DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pawprints"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  postgres-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: pawprints_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      AUTH_DB_PASSWORD: test_auth
+      EVENT_DB_PASSWORD: test_event
+      MEDIA_DB_PASSWORD: test_media
+      ANALYTICS_DB_PASSWORD: test_analytics
+    tmpfs:
+      - /var/lib/postgresql/data
+    volumes:
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pawprints_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis-test:
+    image: redis:7-alpine
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  postgres_data:
+  media_data:
+```
+
+Later service tasks extend this Compose file with application, migration, and test-runner services. `postgres-test` and `redis-test` use ephemeral storage and never share the user's persistent demo data.
+
+- [ ] **Step 6: Add real `scripts/dev.ps1` setup and command parser**
+
+Create a PowerShell script with explicit cases and a real setup flow. `setup` creates `.env` from `.env.example` when missing, generates only missing values, preserves existing credentials/keys, and never silently rotates secrets for an existing PostgreSQL volume.
 
 ```powershell
 param(
@@ -198,15 +300,64 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function New-UrlSafeSecret {
+  $bytes = [byte[]]::new(32)
+  [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+  return [Convert]::ToBase64String($bytes).TrimEnd("=").Replace("+","-").Replace("/","_")
+}
+
+function Set-EnvValueIfPlaceholder {
+  param([string]$Path, [string]$Name, [string]$Value)
+  $content = Get-Content $Path -Raw
+  if ($content -match "(?m)^$Name=(CHANGE_ME|CHANGE_ME_GENERATED)$") {
+    $content = $content -replace "(?m)^$Name=.*$", "$Name=$Value"
+    Set-Content -Path $Path -Value $content -NoNewline
+  }
+}
+
+function Ensure-LocalConfig {
+  $volumeExists = (docker volume ls --format "{{.Name}}" | Select-String -SimpleMatch "pawprints_postgres_data")
+  if (!(Test-Path ".env") -and $volumeExists) {
+    throw ".env is missing but the PostgreSQL volume exists. Restore .env or run an explicitly destructive reset before generating new DB credentials."
+  }
+  if (!(Test-Path ".env")) { Copy-Item ".env.example" ".env" }
+  New-Item -ItemType Directory -Force "secrets" | Out-Null
+  foreach ($name in "POSTGRES_ADMIN_PASSWORD","AUTH_DB_PASSWORD","EVENT_DB_PASSWORD","MEDIA_DB_PASSWORD","ANALYTICS_DB_PASSWORD","EVENT_INTERNAL_TOKEN","MEDIA_INTERNAL_TOKEN","ANALYTICS_INTERNAL_TOKEN") {
+    Set-EnvValueIfPlaceholder ".env" $name (New-UrlSafeSecret)
+  }
+  $envContent = Get-Content ".env" -Raw
+  foreach ($name in "AUTH","EVENT","MEDIA","ANALYTICS") {
+    $password = [regex]::Match($envContent, "(?m)^${name}_DB_PASSWORD=(.+)$").Groups[1].Value
+    $role = "pawprints_" + $name.ToLowerInvariant()
+    if ($name -eq "ANALYTICS") { $role = "${role}_ro" } else { $role = "${role}_rw" }
+    $urlName = "${name}_DATABASE_URL"
+    $url = "postgresql+psycopg://${role}:${password}@postgres:5432/pawprints"
+    $envContent = $envContent -replace "(?m)^$urlName=.*$", "$urlName=$url"
+  }
+  Set-Content -Path ".env" -Value $envContent -NoNewline
+
+  if (!(Test-Path "secrets/jwt_private.pem") -or !(Test-Path "secrets/jwt_public.pem")) {
+    $rsa = [System.Security.Cryptography.RSA]::Create(2048)
+    $privatePem = [System.Text.Encoding]::ASCII.GetString($rsa.ExportPkcs8PrivateKeyPem())
+    $publicPem = [System.Text.Encoding]::ASCII.GetString($rsa.ExportSubjectPublicKeyInfoPem())
+    Set-Content -Path "secrets/jwt_private.pem" -Value $privatePem -NoNewline
+    Set-Content -Path "secrets/jwt_public.pem" -Value $publicPem -NoNewline
+  }
+}
+
+function Wait-ForReady {
+  docker compose up -d --wait auth event media analytics nginx prometheus grafana
+}
+
 switch ($Command) {
-  "setup" { Write-Host "Setting up local config and secrets"; exit 0 }
+  "setup" { Ensure-LocalConfig; exit 0 }
   "migrate" { docker compose run --rm auth-migrate; docker compose run --rm event-migrate; docker compose run --rm media-migrate }
   "up" { docker compose up -d }
   "test" { docker compose run --rm auth-test; docker compose run --rm event-test; docker compose run --rm media-test; docker compose run --rm analytics-test }
   "smoke" { docker compose run --rm smoke }
   "seed" { docker compose run --rm seed }
   "down" { docker compose down }
-  "start" { & $PSCommandPath setup; docker compose up -d postgres redis; & $PSCommandPath migrate; & $PSCommandPath up; & $PSCommandPath smoke }
+  "start" { & $PSCommandPath setup; docker compose up -d --wait postgres redis; & $PSCommandPath migrate; & $PSCommandPath up; Wait-ForReady; & $PSCommandPath smoke }
   "demo" { & $PSCommandPath start; & $PSCommandPath seed }
   "reset-data" {
     throw "Destructive reset is intentionally not implemented until explicitly requested during implementation."
@@ -214,16 +365,16 @@ switch ($Command) {
 }
 ```
 
-- [ ] **Step 6: Verify shell surface**
+- [ ] **Step 7: Verify shell surface**
 
 Run: `powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 setup`
 
-Expected: exits 0 and does not create seed data.
+Expected: exits 0, creates `.env` and `secrets/jwt_private.pem` / `secrets/jwt_public.pem` when missing, replaces placeholder secrets with URL-safe generated values, aligns `*_DATABASE_URL` passwords with generated DB passwords, preserves existing generated values on repeated setup, and does not create seed data.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add .gitignore .env.example README.md compose.yaml scripts/dev.ps1 infra/postgres/init/001-bootstrap.sql
+git add .gitignore .env.example README.md compose.yaml scripts/dev.ps1 infra/postgres/init/001-bootstrap.sh
 git commit -m "chore: scaffold Pawprints local workflow"
 ```
 
@@ -244,7 +395,17 @@ git commit -m "chore: scaffold Pawprints local workflow"
 - Produces: `verify_access_token(token: str, public_key_pem: str, issuer: str, audience: str) -> AuthenticatedUser`, `verify_internal_request(caller: str, token: str, allowed_callers: set[str], expected_tokens: Mapping[str, str]) -> InternalCaller`, `error_response(code: str, message: str, status_code: int, request_id: str, details: list[dict] | None = None) -> JSONResponse`.
 - Consumes: RS256 public key, issuer `pawprints-auth`, audience `pawprints-api`.
 
-- [ ] **Step 1: Write failing JWT tests**
+- [ ] **Step 1: Create dependency metadata and install test dependencies**
+
+Create `packages/pawprints-common/pyproject.toml` with runtime dependencies `fastapi`, `pyjwt[crypto]`, and test extra dependencies `pytest`, `httpx`, and `cryptography`. Create an empty `packages/pawprints-common/pawprints_common/__init__.py` so editable install succeeds before behavior modules exist. Then run:
+
+```powershell
+python -m pip install -e "packages/pawprints-common[dev]"
+```
+
+Expected: dependency installation exits 0.
+
+- [ ] **Step 2: Write failing JWT tests**
 
 ```python
 def test_verify_access_token_accepts_rs256_with_expected_issuer_audience():
@@ -260,13 +421,13 @@ def test_verify_access_token_rejects_expired_token():
         verify_access_token(expired_rs256_token, public_key_pem, "pawprints-auth", "pawprints-api")
 ```
 
-- [ ] **Step 2: Verify RED**
+- [ ] **Step 3: Verify RED**
 
 Run: `python -m pytest packages/pawprints-common/tests/test_jwt.py -q`
 
 Expected: FAIL because `pawprints_common.jwt` does not exist.
 
-- [ ] **Step 3: Implement JWT verification**
+- [ ] **Step 4: Implement JWT verification**
 
 Use `pyjwt[crypto]` or `python-jose[cryptography]`; keep algorithm fixed to `RS256`. Validate `iss`, `aud`, `exp`, and UUID-shaped `sub`. Return:
 
@@ -276,7 +437,7 @@ class AuthenticatedUser:
     user_id: UUID
 ```
 
-- [ ] **Step 4: Write and verify internal auth RED**
+- [ ] **Step 5: Write and verify internal auth RED**
 
 ```python
 def test_verify_internal_request_uses_constant_time_comparison(monkeypatch):
@@ -299,7 +460,7 @@ Run: `python -m pytest packages/pawprints-common/tests/test_internal_auth.py -q`
 
 Expected: FAIL before implementation.
 
-- [ ] **Step 5: Implement internal auth and error envelope helpers**
+- [ ] **Step 6: Implement internal auth and error envelope helpers**
 
 Implement `hmac.compare_digest`, safe exceptions, and `error_response`. `error_response` always emits:
 
@@ -307,13 +468,13 @@ Implement `hmac.compare_digest`, safe exceptions, and `error_response`. `error_r
 {"error":{"code":"validation_failed","message":"Some fields are invalid.","request_id":"req-123"}}
 ```
 
-- [ ] **Step 6: Verify GREEN**
+- [ ] **Step 7: Verify GREEN**
 
 Run: `python -m pytest packages/pawprints-common/tests -q`
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add packages/pawprints-common
@@ -346,9 +507,20 @@ git commit -m "feat: add shared Pawprints security primitives"
 **Interfaces:**
 - Produces public endpoints: `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `POST /api/v1/auth/refresh`, `POST /api/v1/auth/logout`, `GET /api/v1/auth/me`.
 - Produces JSON session shape: `{"access_token": str, "token_type": "Bearer", "expires_in": 900, "user": {"id": str, "email": str, "display_name": str | None}}`.
-- Consumes common JWT config values `pawprints-auth` and `pawprints-api`.
+- Consumes common JWT config values `pawprints-auth` and `pawprints-api`, RS256 private key path, and `AUTH_ALLOWED_ORIGINS=http://localhost:8080,http://localhost:5173`.
 
-- [ ] **Step 1: Write password policy tests**
+- [ ] **Step 1: Create service dependency metadata and start isolated test database**
+
+Create `services/auth/pyproject.toml` with runtime dependencies `fastapi`, `uvicorn`, `pydantic-settings`, `sqlalchemy`, `psycopg[binary]`, `alembic`, `pwdlib`, `pyjwt[crypto]`, and an editable path dependency on `../../packages/pawprints-common`. Add test dependencies `pytest`, `httpx`, and `pytest-cov`. Then run:
+
+```powershell
+python -m pip install -e "packages/pawprints-common[dev]" -e "services/auth[dev]"
+docker compose up -d --wait postgres-test
+```
+
+Expected: dependencies install and `postgres-test` is healthy.
+
+- [ ] **Step 2: Write password policy tests**
 
 ```python
 def test_password_hash_verifies_and_is_not_plaintext():
@@ -369,13 +541,13 @@ Run: `python -m pytest services/auth/tests/test_passwords.py -q`
 
 Expected: FAIL before `passwords.py` exists.
 
-- [ ] **Step 2: Implement Argon2id password handling**
+- [ ] **Step 3: Implement Argon2id password handling**
 
 Use `pwdlib.PasswordHash.recommended()` or equivalent Argon2id library API. Enforce exact policy: min 12, max 128, reject empty/all-whitespace, no composition rules, no trimming.
 
-- [ ] **Step 3: Write Auth API tests**
+- [ ] **Step 4: Write Auth API tests**
 
-Cover register/login/me/no-store/generic invalid credentials:
+Cover register/login/me/no-store/generic invalid credentials and explicit Origin allowlist for refresh/logout:
 
 ```python
 def test_register_creates_session_sets_cookie_and_returns_access_token(client):
@@ -390,9 +562,14 @@ def test_register_creates_session_sets_cookie_and_returns_access_token(client):
     assert response.json()["token_type"] == "Bearer"
     assert response.json()["expires_in"] == 900
     assert response.json()["user"]["email"] == "user@example.com"
+
+def test_refresh_rejects_origin_not_in_allowlist(client, registered_refresh_cookie):
+    response = client.post("/api/v1/auth/refresh", headers={"Origin": "http://evil.example"}, cookies=registered_refresh_cookie)
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "origin_not_allowed"
 ```
 
-- [ ] **Step 4: Write refresh rotation and concurrency tests**
+- [ ] **Step 5: Write refresh rotation and concurrency tests**
 
 ```python
 def test_refresh_rotates_and_old_refresh_token_is_rejected(client):
@@ -407,23 +584,23 @@ def test_concurrent_refresh_allows_at_most_one_success(auth_db_session, refresh_
     assert sum(result.status_code == 200 for result in results) == 1
 ```
 
-- [ ] **Step 5: Verify RED**
+- [ ] **Step 6: Verify RED**
 
 Run: `python -m pytest services/auth/tests -q`
 
 Expected: FAIL for missing endpoints/models.
 
-- [ ] **Step 6: Implement Auth models, migration, routes, token issuance**
+- [ ] **Step 7: Implement Auth models, migration, routes, token issuance**
 
-Use SQLAlchemy models for `auth.users` and `auth.refresh_tokens`. Hash refresh token with `hashlib.sha256(token.encode("utf-8")).hexdigest()`. Rotate with a transaction that locks the presented refresh row, sets `revoked_at`, inserts replacement with the same `expires_at`, and stores `replaced_by_token_id`.
+Use SQLAlchemy models for `auth.users` and `auth.refresh_tokens`. Hash refresh token with `hashlib.sha256(token.encode("utf-8")).hexdigest()`. Rotate with a PostgreSQL transaction that locks the presented refresh row, sets `revoked_at`, inserts replacement with the same `expires_at`, and stores `replaced_by_token_id`. Auth session endpoints validate `Origin` against `AUTH_ALLOWED_ORIGINS`, including both `http://localhost:8080` and Vite `http://localhost:5173`.
 
-- [ ] **Step 7: Verify GREEN**
+- [ ] **Step 8: Verify GREEN**
 
 Run: `python -m pytest services/auth/tests packages/pawprints-common/tests -q`
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add services/auth packages/pawprints-common
@@ -462,7 +639,18 @@ git commit -m "feat: add auth service"
 - Consumes shared `verify_access_token` and `verify_internal_request`.
 - Consumes Analytics invalidation client interface: `invalidate_user_analytics(user_id: UUID, request_id: str) -> None`.
 
-- [ ] **Step 1: Write time and validation tests**
+- [ ] **Step 1: Create service dependency metadata and start isolated test database**
+
+Create `services/event/pyproject.toml` with runtime dependencies `fastapi`, `uvicorn`, `pydantic-settings`, `sqlalchemy`, `psycopg[binary]`, `alembic`, `httpx`, and editable `../../packages/pawprints-common`. Add test dependencies `pytest`, `httpx`, and `pytest-cov`. Then run:
+
+```powershell
+python -m pip install -e "packages/pawprints-common[dev]" -e "services/event[dev]"
+docker compose up -d --wait postgres-test
+```
+
+Expected: dependencies install and `postgres-test` is healthy.
+
+- [ ] **Step 2: Write time and validation tests**
 
 ```python
 def test_local_datetime_timezone_derives_utc_and_local_date():
@@ -479,11 +667,11 @@ Run: `python -m pytest services/event/tests/test_time_semantics.py -q`
 
 Expected: FAIL before implementation.
 
-- [ ] **Step 2: Implement time semantics**
+- [ ] **Step 3: Implement time semantics**
 
 Use Python `zoneinfo.ZoneInfo`. Accept local datetime input without trusting client-supplied `local_date`. Return canonical UTC `occurred_at`, validated `timezone`, and derived `local_date`.
 
-- [ ] **Step 3: Write category tests**
+- [ ] **Step 4: Write category tests**
 
 Cover list/create/rename, normalized duplicate prevention, quoted ETag, stale `If-Match`, and cross-user rename returning 404.
 
@@ -495,7 +683,7 @@ def test_category_duplicate_is_case_insensitive_per_user(client, user_token):
     assert response.json()["error"]["code"] == "category_name_exists"
 ```
 
-- [ ] **Step 4: Write Event ownership and foreign category tests**
+- [ ] **Step 5: Write Event ownership and foreign category tests**
 
 ```python
 def test_user_b_cannot_create_event_with_user_a_category(client, token_a, token_b, category_a):
@@ -513,7 +701,7 @@ def test_user_b_cannot_patch_own_event_to_user_a_category(client, token_b, event
     assert response.json()["error"]["code"] == "resource_not_found"
 ```
 
-- [ ] **Step 5: Write optimistic locking tests**
+- [ ] **Step 6: Write optimistic locking tests**
 
 ```python
 def test_patch_requires_if_match(client, token_a, event_a):
@@ -527,7 +715,7 @@ def test_stale_if_match_returns_412_without_leaking_foreign_versions(client, tok
     assert stale.json()["error"]["code"] == "stale_version"
 ```
 
-- [ ] **Step 6: Write Search and Timeline tests**
+- [ ] **Step 7: Write Search and Timeline tests**
 
 ```python
 def test_timeline_orders_by_occurred_at_ascending(client, token_a, category_a):
@@ -542,27 +730,27 @@ def test_search_is_user_scoped_at_query_level(client, token_a, token_b, category
     assert response.json()["items"] == []
 ```
 
-- [ ] **Step 7: Verify RED**
+- [ ] **Step 8: Verify RED**
 
 Run: `python -m pytest services/event/tests -q`
 
 Expected: FAIL for missing Event service implementation.
 
-- [ ] **Step 8: Implement Event models, migrations, routes, analytics view**
+- [ ] **Step 9: Implement Event models, migrations, routes, analytics view**
 
-Implement `events.categories`, `events.events`, and an Event-owned analytics view such as `events.analytics_event_facts`. Register `/events/timeline` and `/events/search` before `/events/{event_id}`. Use atomic `UPDATE ... WHERE id = :id AND user_id = :user_id AND version = :expected_version RETURNING ...` semantics through SQLAlchemy.
+Implement `events.categories`, `events.events`, and the final Event-owned analytics view in `services/event/migrations/versions/0001_event_tables.py` before Task 5 applies this migration. The view is strictly least privilege for MVP activity counts and exposes only `event_id`, `user_id`, `category_id`, `category_name`, and `local_date`. Grant SELECT on that view to `pawprints_analytics_ro` in this migration. Register `/events/timeline` and `/events/search` before `/events/{event_id}`. Use atomic `UPDATE ... WHERE id = :id AND user_id = :user_id AND version = :expected_version RETURNING ...` semantics through SQLAlchemy.
 
-- [ ] **Step 9: Implement internal ownership check and Analytics invalidation client**
+- [ ] **Step 10: Implement internal ownership check and Analytics invalidation client**
 
 `GET /internal/events/{event_id}/ownership` requires Media internal credentials plus forwarded Bearer JWT. Event Service validates both, checks ownership, and returns 200 for owned or 404 for missing/foreign. The Analytics invalidation client uses reusable `httpx.Client` with request ID and Event internal token; failures are logged without rolling back Event mutations.
 
-- [ ] **Step 10: Verify GREEN**
+- [ ] **Step 11: Verify GREEN**
 
 Run: `python -m pytest services/event/tests packages/pawprints-common/tests -q`
 
 Expected: PASS.
 
-- [ ] **Step 11: Commit**
+- [ ] **Step 12: Commit**
 
 ```bash
 git add services/event packages/pawprints-common
@@ -573,6 +761,11 @@ git commit -m "feat: add event service core"
 
 **Files:**
 - Modify: `compose.yaml`
+- Create: `apps/web/package.json`
+- Create: `apps/web/package-lock.json`
+- Create: `apps/web/index.html`
+- Create: `apps/web/src/main.tsx`
+- Create: `infra/nginx/Dockerfile`
 - Create: `infra/nginx/nginx.conf`
 - Modify: `scripts/dev.ps1`
 - Create: `tests/smoke/pawprints_smoke.py`
@@ -582,29 +775,86 @@ git commit -m "feat: add event service core"
 - Produces Nginx public routes for `/api/v1/auth/*`, `/api/v1/events/*`, and `/api/v1/categories/*`.
 - Produces smoke helper functions `register_user`, `login_user`, `create_category`, `create_event`, `get_timeline`.
 
-- [ ] **Step 1: Add Compose services and migration jobs**
+- [ ] **Step 1: Add Compose services, healthchecks, test infrastructure, and migration jobs**
 
-Define private `auth`, `event`, `postgres`, and `nginx` services plus `auth-migrate`, `event-migrate`, `auth-test`, `event-test`, and `smoke`. Do not expose `auth` or `event` ports to the host. Expose only Nginx.
+Extend the Compose infrastructure from Task 1 with private `auth`, `event`, and `nginx` services plus `auth-migrate`, `event-migrate`, `auth-test`, `event-test`, and `smoke`. Do not expose `auth` or `event` ports to the host. Expose only Nginx and demo observability ports. Add Compose healthchecks for Auth, Event, and Nginx so `docker compose up -d --wait ...` blocks until services are healthy.
 
 - [ ] **Step 2: Configure Nginx routing**
 
-Route:
+Use one public Nginx gateway and preserve the original `/api/v1` URI when proxying. Cover exact collection paths and nested paths separately:
 
 ```nginx
-location /api/v1/auth/ { proxy_pass http://auth:8000/api/v1/auth/; }
-location /api/v1/categories/ { proxy_pass http://event:8000/api/v1/categories/; }
-location /api/v1/events/ { proxy_pass http://event:8000/api/v1/events/; }
+server {
+  listen 80;
+  root /usr/share/nginx/html;
+  add_header X-Request-Id $request_id always;
+
+  proxy_set_header Host $host;
+  proxy_set_header Authorization $http_authorization;
+  proxy_set_header Cookie $http_cookie;
+  proxy_set_header X-Request-Id $request_id;
+  proxy_set_header X-User-Id "";
+  proxy_set_header X-Pawprints-Internal-Service "";
+  proxy_set_header X-Pawprints-Internal-Token "";
+
+  location = /api/v1/auth { proxy_pass http://auth:8000$request_uri; }
+  location /api/v1/auth/ { proxy_pass http://auth:8000$request_uri; }
+
+  location = /api/v1/categories { proxy_pass http://event:8000$request_uri; }
+  location /api/v1/categories/ { proxy_pass http://event:8000$request_uri; }
+
+  location = /api/v1/events { proxy_pass http://event:8000$request_uri; }
+  location /api/v1/events/ { proxy_pass http://event:8000$request_uri; }
+
+  location /internal/ { return 404; }
+
+  location / {
+    try_files $uri /index.html;
+  }
+}
 ```
 
-Forward `Authorization`, `Cookie`, `Set-Cookie`, and `X-Request-Id`. Strip `X-User-Id`, `X-Pawprints-Internal-Service`, and `X-Pawprints-Internal-Token` from public requests.
+Generate or normalize the public request ID at Nginx with `$request_id`, forward that value as `X-Request-Id`, and return it as an `X-Request-Id` response header. Forward `Authorization`, `Cookie`, and `Set-Cookie`. Strip `X-User-Id`, `X-Pawprints-Internal-Service`, and `X-Pawprints-Internal-Token` from public requests.
 
-- [ ] **Step 3: Write partial smoke test**
+- [ ] **Step 3: Add minimal frontend build input**
+
+Create a tiny Vite React shell that renders "Pawprints" at `/` so the production/demo gateway can build and serve a real React artifact before the full UI is implemented. Run:
+
+```powershell
+cd apps/web
+npm install
+cd ../..
+```
+
+Expected: `apps/web/package-lock.json` exists and is committed. Later frontend tasks modify this app instead of creating a second production serving model.
+
+- [ ] **Step 4: Add production/demo Nginx image with React build stage**
+
+Create `infra/nginx/Dockerfile` as the single production serving model:
+
+```dockerfile
+FROM node:22-alpine AS web-build
+WORKDIR /repo/apps/web
+COPY apps/web/package*.json ./
+RUN npm ci
+COPY apps/web ./
+RUN npm run build
+
+FROM nginx:1.27-alpine
+COPY --from=web-build /repo/apps/web/dist /usr/share/nginx/html
+COPY infra/nginx/nginx.conf /etc/nginx/conf.d/default.conf
+```
+
+- [ ] **Step 5: Write partial smoke test**
 
 `tests/smoke/pawprints_smoke.py`:
 
 ```python
 def test_auth_event_timeline_smoke(gateway_url):
     session = requests.Session()
+    home = session.get(f"{gateway_url}/")
+    assert home.status_code == 200
+    assert "Pawprints" in home.text
     auth = register_user(session, gateway_url, unique_email(), "correct horse battery")
     category = create_category(session, gateway_url, auth.access_token, "Running")
     event = create_event(session, gateway_url, auth.access_token, category["id"], title="Morning run")
@@ -612,34 +862,34 @@ def test_auth_event_timeline_smoke(gateway_url):
     assert [item["id"] for item in timeline["items"]] == [event["id"]]
 ```
 
-- [ ] **Step 4: Verify RED**
+- [ ] **Step 6: Verify RED**
 
 Run: `powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 smoke`
 
 Expected: FAIL before Compose/Nginx stack is fully wired.
 
-- [ ] **Step 5: Wire `dev.ps1 migrate`, `up`, `smoke`, and `down`**
+- [ ] **Step 7: Wire `dev.ps1 migrate`, `up`, `smoke`, and `down`**
 
 `migrate` runs only explicit migration jobs and stops on failure. `down` runs `docker compose down` and does not remove volumes.
 
-- [ ] **Step 6: Verify GREEN**
+- [ ] **Step 8: Verify GREEN**
 
 Run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 setup
-docker compose up -d postgres redis
+docker compose up -d --wait postgres redis
 powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 migrate
 powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 up
 powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 smoke
 ```
 
-Expected: smoke test passes through Nginx and no backend service port is exposed to the browser/host.
+Expected: smoke test passes through Nginx, `GET /` returns the Pawprints frontend/index, exact collection endpoints work, nested resource endpoints work, internal routes are not public, and no backend service port is exposed to the browser/host.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add compose.yaml infra/nginx/nginx.conf scripts/dev.ps1 tests/smoke README.md
+git add compose.yaml apps/web infra/nginx/Dockerfile infra/nginx/nginx.conf scripts/dev.ps1 tests/smoke README.md
 git commit -m "chore: wire auth event stack through nginx"
 ```
 
@@ -675,7 +925,18 @@ git commit -m "chore: wire auth event stack through nginx"
 - Consumes Event ownership endpoint with Media internal credentials and forwarded user JWT.
 - Produces `LocalFileStorage.write(key: str, content: bytes) -> None`, `read(key: str) -> Iterator[bytes]`, `delete(key: str) -> None`.
 
-- [ ] **Step 1: Write image validation tests**
+- [ ] **Step 1: Create service dependency metadata and start isolated test infrastructure**
+
+Create `services/media/pyproject.toml` with runtime dependencies `fastapi`, `uvicorn`, `pydantic-settings`, `sqlalchemy`, `psycopg[binary]`, `alembic`, `httpx`, `pillow`, and editable `../../packages/pawprints-common`. Add test dependencies `pytest`, `httpx`, and `pytest-cov`. Then run:
+
+```powershell
+python -m pip install -e "packages/pawprints-common[dev]" -e "services/media[dev]"
+docker compose up -d --wait postgres-test
+```
+
+Expected: dependencies install and `postgres-test` is healthy.
+
+- [ ] **Step 2: Write image validation tests**
 
 ```python
 def test_jpeg_png_webp_are_decoded_and_reencoded_without_exif(sample_jpeg_with_exif):
@@ -692,17 +953,17 @@ def test_animated_webp_is_rejected(animated_webp_bytes):
         normalize_image(animated_webp_bytes, max_bytes=5_242_880, max_pixels=30_000_000)
 ```
 
-- [ ] **Step 2: Verify RED**
+- [ ] **Step 3: Verify RED**
 
 Run: `python -m pytest services/media/tests/test_image_processing.py -q`
 
 Expected: FAIL before image processing exists.
 
-- [ ] **Step 3: Implement Pillow normalization**
+- [ ] **Step 4: Implement Pillow normalization**
 
 Use `Image.open`, `Image.verify` or full decode, `ImageOps.exif_transpose`, `Image.n_frames` for animation rejection, `Image.MAX_IMAGE_PIXELS` left enabled, explicit pixel count check, and re-encode JPEG/PNG/WebP to metadata-stripped bytes.
 
-- [ ] **Step 4: Write media count/order/security tests**
+- [ ] **Step 5: Write media count/order/security tests**
 
 ```python
 def test_upload_appends_display_order_and_preserves_batch_order(client, token_a, event_a, image_files):
@@ -722,7 +983,7 @@ def test_public_media_json_does_not_expose_storage_key_or_path(client, token_a, 
     assert "path" not in body
 ```
 
-- [ ] **Step 5: Write compensation tests**
+- [ ] **Step 6: Write compensation tests**
 
 ```python
 def test_metadata_failure_deletes_previously_written_files(media_service, storage, event_a, image_file, monkeypatch):
@@ -737,35 +998,35 @@ def test_concurrent_limit_rejection_deletes_normalized_temp_files(media_service,
     assert storage.count_new_files_for_event(event_with_four_media.id) == 0
 ```
 
-- [ ] **Step 6: Verify RED**
+- [ ] **Step 7: Verify RED**
 
 Run: `python -m pytest services/media/tests -q`
 
 Expected: FAIL before Media routes/storage/DB exist.
 
-- [ ] **Step 7: Implement Media metadata migration and LocalFileStorage**
+- [ ] **Step 8: Implement Media metadata migration and LocalFileStorage**
 
 Create `media.event_media` with UUID id, event_id, storage_key, mime_type, file_size, display_order, created_at, and unique `(event_id, display_order)`. Store files under `MEDIA_STORAGE_ROOT` using generated keys. Use a persistent Compose volume mounted at `/var/lib/pawprints/media`.
 
-- [ ] **Step 8: Implement upload transaction and cleanup**
+- [ ] **Step 9: Implement upload transaction and cleanup**
 
-Decode/normalize first into temporary in-memory or temporary file objects. Enter a short DB transaction, acquire per-event transaction advisory lock, recount media, reject `existing + incoming > 5`, assign display_order values, write files, insert metadata, commit. On any rejection or metadata failure after writing files, best-effort delete newly written files before returning a safe error.
+Decode/normalize first into temporary in-memory or temporary file objects outside the short DB critical section. Enter a short DB transaction, acquire per-event transaction advisory lock, recount media, reject `existing + incoming > 5`, assign display_order values, write files, insert metadata, commit. If the five-image limit rejects the batch after temporary normalization, delete temporary files. If any storage write succeeds and any later storage or metadata step fails, best-effort delete every newly written file before returning a safe error.
 
-- [ ] **Step 9: Implement private retrieval and deletion**
+- [ ] **Step 10: Implement private retrieval and deletion**
 
 Every list/retrieve/delete path verifies Event ownership through Event Service. Stream bytes only after authz. Deletion hard-deletes metadata and file and never renumbers display order.
 
-- [ ] **Step 10: Implement idempotent internal cleanup**
+- [ ] **Step 11: Implement idempotent internal cleanup**
 
 `POST /internal/media/events/{event_id}/cleanup` requires Event internal credentials, deletes all files and metadata for the Event, and returns success even when no media remain.
 
-- [ ] **Step 11: Verify GREEN**
+- [ ] **Step 12: Verify GREEN**
 
 Run: `python -m pytest services/media/tests services/event/tests/test_event_security.py packages/pawprints-common/tests -q`
 
 Expected: PASS.
 
-- [ ] **Step 12: Commit**
+- [ ] **Step 13: Commit**
 
 ```bash
 git add services/media compose.yaml
@@ -802,7 +1063,14 @@ services:
 
 - [ ] **Step 2: Add Nginx Media routing and body limit**
 
-Configure `/api/v1/media/` with body size above 25 MB and JSON 413 response. Continue stripping internal headers.
+Configure exact and nested Media routes while preserving the original URI:
+
+```nginx
+location = /api/v1/media { client_max_body_size 30m; proxy_pass http://media:8000$request_uri; }
+location /api/v1/media/ { client_max_body_size 30m; proxy_pass http://media:8000$request_uri; }
+```
+
+Return JSON for Nginx-generated 413 responses where practical. Continue stripping internal headers and keep `/internal/*` inaccessible publicly.
 
 - [ ] **Step 3: Extend smoke**
 
@@ -850,7 +1118,8 @@ git commit -m "chore: route private media through gateway"
 - Create: `services/analytics/app/routes.py`
 - Create: `services/analytics/app/internal.py`
 - Create: `services/analytics/app/main.py`
-- Modify: `services/event/migrations/versions/0001_event_tables.py`
+- Modify: `compose.yaml`
+- Modify: `infra/nginx/nginx.conf`
 - Test: `services/analytics/tests/test_activity_counts.py`
 - Test: `services/analytics/tests/test_cache.py`
 - Test: `services/analytics/tests/test_security.py`
@@ -862,20 +1131,31 @@ git commit -m "chore: route private media through gateway"
 - Consumes read-only `events.analytics_event_facts` view.
 - Produces cache helpers `cache_key(user_id: UUID, version: int, query: ActivityQuery) -> str` and `invalidate_user(user_id: UUID) -> None`.
 
-- [ ] **Step 1: Write analytics user-scope and grouping tests**
+- [ ] **Step 1: Create service dependency metadata and start isolated test infrastructure**
+
+Create `services/analytics/pyproject.toml` with runtime dependencies `fastapi`, `uvicorn`, `pydantic-settings`, `sqlalchemy`, `psycopg[binary]`, `redis`, and editable `../../packages/pawprints-common`. Add test dependencies `pytest`, `httpx`, and `pytest-cov`. Then run:
+
+```powershell
+python -m pip install -e "packages/pawprints-common[dev]" -e "services/analytics[dev]"
+docker compose up -d --wait postgres-test redis-test
+```
+
+Expected: dependencies install, `postgres-test` is healthy, and `redis-test` is healthy.
+
+- [ ] **Step 2: Write analytics user-scope and grouping tests**
 
 ```python
 def test_activity_counts_group_by_category_for_authenticated_user(client, token_a, facts_for_two_users):
     response = client.get("/api/v1/analytics/activity-counts?start_date=2026-09-01&end_date=2026-09-30", headers=bearer(token_a))
-    assert all(item["user_id"] is None for item in response.json().get("debug", []))
     assert response.json()["items"] == [{"category_id": str(facts_for_two_users.a_category_id), "category_name": "Running", "count": 2}]
+    assert facts_for_two_users.b_category_id not in {UUID(item["category_id"]) for item in response.json()["items"]}
 
 def test_weekly_grouping_uses_iso_monday_buckets(client, token_a, facts):
     response = client.get("/api/v1/analytics/activity-counts?start_date=2026-09-01&end_date=2026-09-30&grouping=week", headers=bearer(token_a))
     assert response.json()["buckets"][0]["bucket_start_date"] == "2026-08-31"
 ```
 
-- [ ] **Step 2: Write Redis cache tests**
+- [ ] **Step 3: Write Redis cache tests**
 
 ```python
 def test_cache_key_is_user_scoped_and_versioned():
@@ -891,7 +1171,7 @@ def test_invalidation_increments_user_version(redis_client, user_id):
     assert get_user_cache_version(redis_client, user_id) == before + 1
 ```
 
-- [ ] **Step 3: Write Redis degraded fallback tests**
+- [ ] **Step 4: Write Redis degraded fallback tests**
 
 ```python
 def test_redis_unavailable_queries_postgres_and_marks_cache_degraded(client, token_a, monkeypatch):
@@ -901,34 +1181,45 @@ def test_redis_unavailable_queries_postgres_and_marks_cache_degraded(client, tok
     assert analytics_cache_degraded_metric_value() == 1
 ```
 
-- [ ] **Step 4: Verify RED**
+- [ ] **Step 5: Verify RED**
 
 Run: `python -m pytest services/analytics/tests -q`
 
 Expected: FAIL before Analytics implementation exists.
 
-- [ ] **Step 5: Implement analytics view and grants**
+- [ ] **Step 6: Verify Event-owned analytics view contract**
 
-Ensure Event migration creates or replaces `events.analytics_event_facts` with only approved fields: event_id, user_id, category_id, category_name, mood, occurred_at, local_date, and location fields only if required. Grant SELECT on the view to `pawprints_analytics_ro`; do not grant broad Event table access.
+Do not modify `services/event/migrations/versions/0001_event_tables.py` in this task because Task 5 has already applied it. Verify that the view created in Task 4 exposes exactly the MVP fields Analytics needs: `event_id`, `user_id`, `category_id`, `category_name`, and `local_date`. Verify `pawprints_analytics_ro` can SELECT this view and cannot SELECT `events.events.description` or base Event tables directly.
 
-- [ ] **Step 6: Implement Analytics routes and cache**
+- [ ] **Step 7: Add Analytics Compose and Nginx routing**
+
+Add private `analytics` and `analytics-test` services to Compose. Route exact and nested public Analytics paths while preserving the original URI:
+
+```nginx
+location = /api/v1/analytics { proxy_pass http://analytics:8000$request_uri; }
+location /api/v1/analytics/ { proxy_pass http://analytics:8000$request_uri; }
+```
+
+Do not route `/internal/analytics/*` through public Nginx.
+
+- [ ] **Step 8: Implement Analytics routes and cache**
 
 Require explicit inclusive `start_date` and `end_date`. Frontend presets are not accepted as backend presets. Query read-only view with `WHERE user_id = :current_user_id AND local_date BETWEEN :start_date AND :end_date`. Cache user-scoped results under `analytics:v1:user:{user_id}:ver:{version}:activity-counts:{filter_hash}` with TTL.
 
-- [ ] **Step 7: Implement internal invalidation**
+- [ ] **Step 9: Implement internal invalidation**
 
 `POST /internal/analytics/users/{user_id}/invalidate` requires Event internal credentials and increments `analytics:user:{user_id}:version`. Failure returns a safe error for internal callers but Event Service treats invalidation as best effort.
 
-- [ ] **Step 8: Verify GREEN**
+- [ ] **Step 10: Verify GREEN**
 
 Run: `python -m pytest services/analytics/tests services/event/tests packages/pawprints-common/tests -q`
 
 Expected: PASS.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
-git add services/analytics services/event/migrations
+git add services/analytics compose.yaml infra/nginx/nginx.conf
 git commit -m "feat: add analytics service"
 ```
 
@@ -1011,10 +1302,11 @@ git commit -m "feat: orchestrate event hard delete"
 ### Task 10: React App Shell, Auth Runtime State, and API Client
 
 **Files:**
-- Create: `apps/web/package.json`
+- Modify: `apps/web/package.json`
+- Modify: `apps/web/package-lock.json`
 - Create: `apps/web/vite.config.ts`
-- Create: `apps/web/index.html`
-- Create: `apps/web/src/main.tsx`
+- Modify: `apps/web/index.html`
+- Modify: `apps/web/src/main.tsx`
 - Create: `apps/web/src/App.tsx`
 - Create: `apps/web/src/api/client.ts`
 - Create: `apps/web/src/auth/AuthProvider.tsx`
@@ -1029,7 +1321,20 @@ git commit -m "feat: orchestrate event hard delete"
 - Produces auth context with runtime-only `accessToken`, `user`, `login`, `register`, `logout`, and single-flight `refresh`.
 - Consumes public `/api/v1/auth/*` endpoints through relative URLs.
 
-- [ ] **Step 1: Write auth client single-flight test**
+- [ ] **Step 1: Install frontend dependencies from committed lockfile**
+
+Update the minimal package created in Task 5 to include React Router, lucide-react, react-markdown, remark-gfm, remark-breaks, Vitest, React Testing Library, and jsdom. Then run:
+
+```powershell
+cd apps/web
+npm install
+npm ci
+cd ../..
+```
+
+Expected: `npm ci` exits 0 and `apps/web/package-lock.json` remains committed.
+
+- [ ] **Step 2: Write auth client single-flight and recursion-prevention tests**
 
 ```typescript
 it("shares one refresh request when several requests receive 401", async () => {
@@ -1041,15 +1346,33 @@ it("shares one refresh request when several requests receive 401", async () => {
   ]);
   expect(refreshSpy).toHaveBeenCalledTimes(1);
 });
+
+it("does not recursively refresh when refresh itself fails", async () => {
+  const refreshSpy = vi.fn().mockRejectedValue(new Error("session expired"));
+  const client = createApiClient({ refresh: refreshSpy });
+  const result = await client.request("/api/v1/events/timeline?date=2026-09-09");
+  expect(result.authenticated).toBe(false);
+  expect(refreshSpy).toHaveBeenCalledTimes(1);
+});
+
+it.each(["/api/v1/auth/login", "/api/v1/auth/register", "/api/v1/auth/logout", "/api/v1/auth/refresh"])(
+  "does not trigger automatic refresh for auth session endpoint %s",
+  async (path) => {
+    const refreshSpy = vi.fn();
+    const client = createApiClient({ refresh: refreshSpy });
+    await client.request(path, { method: "POST", authMode: "session" });
+    expect(refreshSpy).not.toHaveBeenCalled();
+  }
+);
 ```
 
-- [ ] **Step 2: Verify RED**
+- [ ] **Step 3: Verify RED**
 
 Run: `cd apps/web; npm test -- --run src/auth/AuthProvider.test.tsx`
 
 Expected: FAIL before app/client exist.
 
-- [ ] **Step 3: Implement Vite app and proxy**
+- [ ] **Step 4: Implement Vite app and proxy**
 
 Configure Vite dev server:
 
@@ -1063,17 +1386,17 @@ server: {
 
 The app uses relative `/api/v1/*` URLs only.
 
-- [ ] **Step 4: Implement auth runtime state**
+- [ ] **Step 5: Implement auth runtime state**
 
-Keep access token in React state/module memory only. Do not use localStorage/sessionStorage/IndexedDB. On app start, call `POST /api/v1/auth/refresh`; if it succeeds, restore user and token.
+Keep access token in React state/module memory only. Do not use localStorage/sessionStorage/IndexedDB. On app start, call `POST /api/v1/auth/refresh`; if it succeeds, restore user and token. The API client distinguishes protected business requests from Auth session endpoints: protected request 401 may trigger one single-flight refresh and one retry, while `/auth/refresh` never triggers refresh and login/register/logout failures never enter a refresh loop.
 
-- [ ] **Step 5: Verify GREEN**
+- [ ] **Step 6: Verify GREEN**
 
 Run: `cd apps/web; npm test -- --run src/auth/AuthProvider.test.tsx`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add apps/web
@@ -1115,6 +1438,15 @@ it("fetches private media as blobs and revokes object URLs on unmount", async ()
   unmount();
   expect(revokeSpy).toHaveBeenCalled();
 });
+
+it("does not render unsupported markdown elements or raw html", () => {
+  render(<MarkdownDescription source={"# Heading\n[link](https://example.com)\n![alt](https://example.com/a.png)\n<div>raw</div>\n**bold**"} />);
+  expect(screen.queryByRole("heading")).toBeNull();
+  expect(screen.queryByRole("link")).toBeNull();
+  expect(screen.queryByAltText("alt")).toBeNull();
+  expect(document.querySelector("div")).toBeNull();
+  expect(screen.getByText("bold").tagName.toLowerCase()).toBe("strong");
+});
 ```
 
 - [ ] **Step 2: Verify RED**
@@ -1133,7 +1465,7 @@ Required fields: title max 120, category_id, intended local datetime, timezone. 
 
 - [ ] **Step 5: Implement restricted Markdown**
 
-Use `react-markdown`, `remark-gfm`, and `remark-breaks`. Disable raw HTML by not using `rehype-raw`; restrict components to `p`, `strong`, `em`, `del`, `ul`, `ol`, `li`, and `br`. Add toolbar buttons that wrap selected text with `**`, `*`, and `~~`.
+Use `react-markdown`, `remark-gfm`, and `remark-breaks`. Disable raw HTML with `skipHtml={true}` and do not use `rehype-raw`. Enforce the approved subset with `allowedElements={["p","strong","em","del","ul","ol","li","br"]}`; do not rely on the `components` mapping as the security/scope allowlist. Links, headings, Markdown images, tables, code blocks, task lists, and raw HTML must not render as active elements. Add toolbar buttons that wrap selected text with `**`, `*`, and `~~`.
 
 - [ ] **Step 6: Implement private Media carousel**
 
@@ -1216,6 +1548,7 @@ git commit -m "feat: add search and analytics views"
 **Files:**
 - Modify: `packages/pawprints-common/pawprints_common/request_context.py`
 - Create: `packages/pawprints-common/pawprints_common/observability.py`
+- Modify: `infra/nginx/nginx.conf`
 - Modify: `services/auth/app/main.py`
 - Modify: `services/event/app/main.py`
 - Modify: `services/media/app/main.py`
@@ -1252,19 +1585,23 @@ Run: `python -m pytest packages/pawprints-common/tests/test_observability.py -q`
 
 Expected: FAIL before observability helpers exist.
 
-- [ ] **Step 3: Implement common observability**
+- [ ] **Step 3: Finalize Nginx request ID ownership**
+
+In `infra/nginx/nginx.conf`, public requests use Nginx `$request_id` as the authoritative request ID. Return it with `add_header X-Request-Id $request_id always;` and forward it with `proxy_set_header X-Request-Id $request_id;`. Do not forward arbitrary client-supplied `X-Request-Id` as authoritative. Services propagate the received Nginx request ID unchanged on service-to-service calls.
+
+- [ ] **Step 4: Implement common observability**
 
 Add structured logs with request_id, service, level, method, route template, status, latency, and safe error/event codes. Add Prometheus RED metrics with low-cardinality labels. Do not label user_id, event_id, filenames, diary/search content, raw URLs, locations, storage keys, or tokens.
 
-- [ ] **Step 4: Add service health/readiness**
+- [ ] **Step 5: Add service health/readiness**
 
 `/healthz` returns process liveness. `/readyz` checks required dependencies. Analytics readiness requires PostgreSQL/read-view availability; Redis unavailability reports degraded cache state through logs/metrics but does not fail readiness when DB fallback works.
 
-- [ ] **Step 5: Provision Prometheus and Grafana**
+- [ ] **Step 6: Provision Prometheus and Grafana**
 
 Prometheus scrapes `auth:8000/metrics`, `event:8000/metrics`, `media:8000/metrics`, and `analytics:8000/metrics` on the internal Compose network. Grafana loads Prometheus datasource and `Pawprints Service Overview` dashboard automatically.
 
-- [ ] **Step 6: Verify observability stack**
+- [ ] **Step 7: Verify observability stack**
 
 Run:
 
@@ -1276,10 +1613,10 @@ curl http://localhost:3000/api/health
 
 Expected: Prometheus ready and Grafana health endpoint returns OK. Service metrics are visible in Prometheus targets.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add packages/pawprints-common services infra/prometheus infra/grafana compose.yaml
+git add packages/pawprints-common services infra/nginx/nginx.conf infra/prometheus infra/grafana compose.yaml
 git commit -m "feat: add Pawprints observability baseline"
 ```
 
@@ -1353,6 +1690,7 @@ git commit -m "test: enforce Pawprints security regressions"
 `tests/smoke/pawprints_smoke.py` must execute:
 
 ```text
+GET / returns the Pawprints React frontend/index through Nginx
 register
 login session established
 create category
@@ -1379,7 +1717,7 @@ Expected: if any vertical-slice requirement is missing, smoke fails with the mis
 
 - [ ] **Step 4: Wire `dev.ps1 seed`, `start`, and `demo`**
 
-`seed` runs only when explicitly called. `start` orchestrates setup, infrastructure startup, explicit migrations, application/monitoring startup, readiness, and smoke. `demo` runs `start` then `seed`. Neither command deletes volumes.
+`seed` runs only when explicitly called. `start` orchestrates setup, `docker compose up -d --wait postgres redis`, explicit migrations, `docker compose up -d --wait auth event media analytics nginx prometheus grafana`, and smoke. `demo` runs `start` then `seed`. Any health/readiness timeout throws and preserves a nonzero exit code. Neither command deletes volumes.
 
 - [ ] **Step 5: Verify full demo path**
 
@@ -1391,7 +1729,7 @@ powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 start
 powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 seed
 ```
 
-Expected: stack starts, migrations run explicitly, smoke passes through Nginx, seed runs through public APIs, Prometheus and Grafana are available, and existing DB/media volumes survive normal `down`.
+Expected: infrastructure healthchecks pass before migrations begin, application/monitoring healthchecks pass before smoke begins, smoke passes through Nginx, seed runs through public APIs, Prometheus and Grafana are available, and existing DB/media volumes survive normal `down`.
 
 - [ ] **Step 6: Update README**
 
@@ -1457,15 +1795,17 @@ curl http://localhost:3000/api/health
 
 Expected: Prometheus ready and Grafana health OK.
 
-- [ ] **Step 5: Verify no future/non-goal implementation slipped in**
+- [ ] **Step 5: Verify no future/non-goal feature implementation slipped in**
 
 Run:
 
 ```powershell
-rg -n "kubernetes|k8s|service mesh|opentelemetry|otel|s3|presigned|oauth|mfa|rbac|admin|category delete|activity tag|postgis|heic|gif|thumbnail|loki|alertmanager" .
+rg -n "kubernetes|k8s|service mesh|opentelemetry|otel|service-mesh|presigned|oauth|mfa|rbac|category delete|category_delete|activity tag|activity_tag|postgis|loki|alertmanager" compose.yaml services apps packages infra
+rg -n "\"(boto3|aioboto3|opentelemetry|prometheus-node-exporter|loki|@react-oauth|@auth0|keycloak|leaflet|mapbox|postgis)\"" services/*/pyproject.toml apps/web/package.json
+Get-ChildItem -Recurse -Directory services,apps,packages,infra | Where-Object { $_.Name -match "oauth|rbac|admin|category-delete|activity-tags|postgis|thumbnail|presigned|otel|opentelemetry|loki|alertmanager" }
 ```
 
-Expected: matches appear only in docs/spec/plan future or non-goal sections, not active MVP implementation code.
+Expected: review/classify any matches. Legitimate matches such as `POSTGRES_ADMIN_USER`, unsupported-media rejection tests, documentation, comments naming explicit non-goals, and safe validation constants are acceptable. Unexpected dependencies, infrastructure services, directories, modules, routes, or UI surfaces for future/non-goal features must be removed before approval.
 
 - [ ] **Step 6: Commit final verification/doc adjustment if needed**
 
