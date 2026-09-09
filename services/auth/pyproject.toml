@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pawprints-auth"
+version = "0.1.0"
+description = "Pawprints Auth service."
+requires-python = ">=3.11"
+dependencies = [
+  "alembic",
+  "fastapi",
+  "psycopg[binary]",
+  "pydantic-settings",
+  "pwdlib[argon2]",
+  "pyjwt[crypto]",
+  "sqlalchemy",
+  "uvicorn",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx",
+  "pytest",
+  "pytest-cov",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+addopts = "-p no:cacheprovider"
+filterwarnings = [
+  "ignore:Using `httpx` with `starlette.testclient` is deprecated:DeprecationWarning",
+  "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",
+  "ignore:Setting per-request cookies=.*:DeprecationWarning",
+]
