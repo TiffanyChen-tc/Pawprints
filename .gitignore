@@ -1,14 +1,19 @@
 # Environment / secrets
 .env
+.env.local
 .env.*
 !.env.example
+secrets/
+.superpowers/
 
 # Python
 __pycache__/
+*.pyc
 *.py[cod]
 .venv/
 venv/
 .pytest_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 
