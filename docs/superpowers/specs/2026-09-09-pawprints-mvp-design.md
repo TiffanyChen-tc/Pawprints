@@ -1,7 +1,7 @@
 ﻿# Pawprints Whole-System MVP Design Specification
 
 Date: 2026-09-09
-Status: Draft for review
+Status: Approved for implementation planning
 
 
 ## 1. Product Goal and MVP Anchor
