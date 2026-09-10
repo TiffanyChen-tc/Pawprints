@@ -1,0 +1,34 @@
+[project]
+name = "pawprints-event"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "alembic",
+  "fastapi",
+  "httpx",
+  "psycopg[binary]",
+  "pydantic-settings",
+  "sqlalchemy",
+  "uvicorn",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "pytest-cov",
+]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["services/event"]
+addopts = "-p no:cacheprovider"
+filterwarnings = [
+  "ignore:The anyio\\.abc\\.BlockingPortal alias is deprecated:DeprecationWarning:starlette\\.testclient",
+]
