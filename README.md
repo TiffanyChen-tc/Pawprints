@@ -47,7 +47,7 @@ pwsh -ExecutionPolicy Bypass -File scripts/dev.ps1 smoke
 pwsh -ExecutionPolicy Bypass -File scripts/dev.ps1 seed
 ```
 
-Task 5 smoke exercises Auth and Event through Nginx only. Auth and Event service ports are intentionally private and are not exposed to the host.
+Task 7 smoke exercises Auth, Event, and private Media upload/list/retrieve through Nginx only. Auth, Event, and Media service ports are intentionally private and are not exposed to the host.
 
 Stop the stack without deleting persistent volumes:
 
@@ -79,10 +79,13 @@ docker compose --profile test up --build -d --wait postgres-test redis-test
 
 The persistent demo PostgreSQL volume is separate from test infrastructure. Test PostgreSQL and Redis are exposed only on loopback host ports for host-run tests.
 
-Task 5 migration and smoke jobs use the `jobs` profile:
+Task 7 migration and smoke jobs use the `jobs` profile:
 
 ```pwsh
 docker compose --profile jobs run --build --rm auth-migrate
 docker compose --profile jobs run --build --rm event-migrate
+docker compose --profile jobs run --build --rm media-migrate
 docker compose --profile jobs run --build --rm smoke
 ```
+
+Uploaded media is stored in the persistent `media_data` volume mounted at `/var/lib/pawprints/media`. Normal `down` does not delete `postgres_data` or `media_data`.

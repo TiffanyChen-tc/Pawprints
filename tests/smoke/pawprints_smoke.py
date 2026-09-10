@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from base64 import b64decode
 from datetime import datetime, timezone
 from http.cookiejar import CookieJar
 from urllib.error import HTTPError, URLError
@@ -25,10 +26,12 @@ class SmokeClient:
         *,
         token: str | None = None,
         payload: dict | None = None,
+        body: bytes | None = None,
         headers: dict[str, str] | None = None,
         expected: int | tuple[int, ...] = 200,
-    ) -> tuple[int, dict[str, str], str]:
-        body = None
+        decode: bool = True,
+    ) -> tuple[int, dict[str, str], str | bytes]:
+        request_body = body
         request_headers = {
             "Accept": "application/json",
             "X-Request-Id": f"smoke-{int(time.time() * 1000)}",
@@ -38,33 +41,97 @@ class SmokeClient:
         if token:
             request_headers["Authorization"] = f"Bearer {token}"
         if payload is not None:
-            body = json.dumps(payload).encode("utf-8")
+            request_body = json.dumps(payload).encode("utf-8")
             request_headers["Content-Type"] = "application/json"
 
-        request = Request(f"{self.base_url}{path}", data=body, headers=request_headers, method=method)
+        request = Request(f"{self.base_url}{path}", data=request_body, headers=request_headers, method=method)
         expected_statuses = (expected,) if isinstance(expected, int) else expected
         try:
             with self.opener.open(request, timeout=10) as response:
                 status = response.status
                 response_headers = dict(response.headers.items())
-                text = response.read().decode("utf-8")
+                response_body = response.read()
         except HTTPError as exc:
             status = exc.code
             response_headers = dict(exc.headers.items())
-            text = exc.read().decode("utf-8")
+            response_body = exc.read()
         except URLError as exc:
             raise AssertionError(f"{method} {path} failed to connect to {self.base_url}: {exc}") from exc
 
+        result: str | bytes = response_body.decode("utf-8") if decode else response_body
         if status not in expected_statuses:
-            raise AssertionError(f"{method} {path} returned {status}, expected {expected_statuses}: {text}")
-        return status, response_headers, text
+            raise AssertionError(f"{method} {path} returned {status}, expected {expected_statuses}: {result}")
+        return status, response_headers, result
 
     def json_request(self, method: str, path: str, **kwargs) -> tuple[int, dict[str, str], dict]:
         status, headers, text = self.request(method, path, **kwargs)
         try:
+            assert isinstance(text, str)
             return status, headers, json.loads(text)
         except json.JSONDecodeError as exc:
             raise AssertionError(f"{method} {path} returned invalid JSON: {text}") from exc
+
+
+def small_png() -> bytes:
+    return b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGNMmXaCAQAEpwIWeLwOZAAAAABJRU5ErkJggg==")
+
+
+def small_jpeg() -> bytes:
+    return b64decode("/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAMAAwDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDxGiiitjI//9k=")
+
+
+def multipart_images(images: list[bytes]) -> tuple[bytes, str]:
+    boundary = f"pawprints-smoke-{int(time.time() * 1000)}"
+    chunks: list[bytes] = []
+    mime_types = ["image/png", "image/jpeg"]
+    filenames = ["smoke.png", "smoke.jpg"]
+    for index, image in enumerate(images):
+        chunks.extend(
+            [
+                f"--{boundary}\r\n".encode("ascii"),
+                (
+                    'Content-Disposition: form-data; name="files"; '
+                    f'filename="{filenames[index % len(filenames)]}"\r\n'
+                ).encode("ascii"),
+                f"Content-Type: {mime_types[index % len(mime_types)]}\r\n\r\n".encode("ascii"),
+                image,
+                b"\r\n",
+            ]
+        )
+    chunks.append(f"--{boundary}--\r\n".encode("ascii"))
+    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
+
+
+def upload_images(client: SmokeClient, token: str, event_id: str, images: list[bytes]) -> list[dict]:
+    body, content_type = multipart_images(images)
+    _, _, created = client.json_request(
+        "POST",
+        f"/api/v1/media/events/{event_id}",
+        token=token,
+        body=body,
+        headers={"Content-Type": content_type},
+        expected=201,
+    )
+    assert isinstance(created, list), "media upload did not return a list"
+    return created
+
+
+def list_media(client: SmokeClient, token: str, event_id: str) -> list[dict]:
+    _, _, listed = client.json_request("GET", f"/api/v1/media/events/{event_id}", token=token)
+    assert isinstance(listed, list), "media list did not return a list"
+    return listed
+
+
+def fetch_media_bytes(client: SmokeClient, token: str, media_id: str) -> bytes:
+    _, _, body = client.request(
+        "GET",
+        f"/api/v1/media/{media_id}",
+        token=token,
+        headers={"Accept": "image/*"},
+        decode=False,
+    )
+    assert isinstance(body, bytes)
+    return body
 
 
 def unique_email() -> str:
@@ -130,6 +197,25 @@ def main() -> None:
 
     _, _, fetched = client.json_request("GET", f"/api/v1/events/{event_id}", token=token)
     assert fetched["id"] == event_id, "nested event route did not return created event"
+
+    media = upload_images(client, token, event_id, [small_png(), small_jpeg()])
+    assert [item["display_order"] for item in media] == [1, 2], "media upload did not preserve batch display order"
+    listed = list_media(client, token, event_id)
+    assert [item["id"] for item in listed] == [item["id"] for item in media], "media list did not match uploaded media"
+    image = fetch_media_bytes(client, token, media[0]["id"])
+    assert image.startswith(b"\x89PNG") or image.startswith(b"\xff\xd8"), "media retrieval did not stream image bytes"
+    client.request("GET", f"/api/v1/media/{media[0]['id']}", expected=404)
+    client.request(
+        "POST",
+        f"/internal/media/events/{event_id}/cleanup",
+        token=token,
+        headers={
+            "X-User-Id": "spoofed",
+            "X-Pawprints-Internal-Service": "event",
+            "X-Pawprints-Internal-Token": "spoofed",
+        },
+        expected=(404, 401, 403),
+    )
 
     _, _, search = client.json_request("GET", "/api/v1/events/search?keyword=Smoke+Pawprint", token=token)
     assert any(item["id"] == event_id for item in search["items"]), "collection search route did not include created event"

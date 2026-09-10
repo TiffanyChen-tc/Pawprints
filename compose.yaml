@@ -117,6 +117,8 @@ services:
         condition: service_healthy
       event:
         condition: service_healthy
+      media:
+        condition: service_healthy
     ports:
       - "8080:80"
     healthcheck:
