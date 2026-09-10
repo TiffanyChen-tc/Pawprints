@@ -136,13 +136,13 @@ function Invoke-ComposeJobIfPresent {
   }
 }
 
-function Assert-NoPublicAuthEventPorts {
+function Assert-NoPublicServicePorts {
   $configJson = & docker compose config --format json
   if ($LASTEXITCODE -ne 0) {
     throw "Native command failed with exit code ${LASTEXITCODE}: docker compose config --format json"
   }
   $config = $configJson | ConvertFrom-Json
-  foreach ($serviceName in "auth","event","media") {
+  foreach ($serviceName in "auth","event","media","analytics") {
     $serviceProperty = $config.services.PSObject.Properties[$serviceName]
     if ($null -ne $serviceProperty) {
       $portsProperty = $serviceProperty.Value.PSObject.Properties["ports"]
@@ -197,7 +197,7 @@ function Invoke-Migrate {
 
 function Invoke-Smoke {
   Wait-ForReady
-  Assert-NoPublicAuthEventPorts
+  Assert-NoPublicServicePorts
   Invoke-Checked docker compose --profile jobs run --build --rm smoke
 }
 

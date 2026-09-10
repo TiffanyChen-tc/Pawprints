@@ -165,6 +165,14 @@ def main() -> None:
         expected=201,
     )
     category_id = category["id"]
+    _, _, second_category = client.json_request(
+        "POST",
+        "/api/v1/categories",
+        token=token,
+        payload={"name": f"Smoke Reading {int(time.time())}"},
+        expected=201,
+    )
+    second_category_id = second_category["id"]
 
     event_date = "2026-09-10"
     _, event_headers, event = client.json_request(
@@ -187,6 +195,49 @@ def main() -> None:
     event_id = event["id"]
     event_etag = event_headers.get("ETag")
     assert event["title"] == "Smoke Pawprint"
+
+    client.json_request(
+        "POST",
+        "/api/v1/events",
+        token=token,
+        payload={
+            "title": "Second Smoke Pawprint",
+            "category_id": category_id,
+            "local_datetime": f"{event_date}T18:00:00",
+            "timezone": "Asia/Taipei",
+        },
+        expected=201,
+    )
+    client.json_request(
+        "POST",
+        "/api/v1/events",
+        token=token,
+        payload={
+            "title": "Smoke Reading Pawprint",
+            "category_id": second_category_id,
+            "local_datetime": f"{event_date}T20:00:00",
+            "timezone": "Asia/Taipei",
+        },
+        expected=201,
+    )
+
+    analytics_query = urlencode({"start_date": event_date, "end_date": event_date})
+    analytics_path = f"/api/v1/analytics/activity-counts?{analytics_query}"
+    client.request("GET", analytics_path, expected=401)
+    _, _, activity_counts = client.json_request("GET", analytics_path, token=token)
+    counts_by_category = {item["category_id"]: item["count"] for item in activity_counts["items"]}
+    assert counts_by_category[category_id] == 2, "Analytics did not count both real Event rows"
+    assert counts_by_category[second_category_id] == 1, "Analytics did not isolate category totals"
+    client.request(
+        "POST",
+        f"/internal/analytics/users/{event_id}/invalidate",
+        headers={
+            "X-User-Id": "spoofed",
+            "X-Pawprints-Internal-Service": "event",
+            "X-Pawprints-Internal-Token": "spoofed",
+        },
+        expected=404,
+    )
 
     _, _, categories = client.json_request("GET", "/api/v1/categories", token=token)
     assert any(item["id"] == category_id for item in categories["items"]), "category collection did not include created category"

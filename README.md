@@ -47,7 +47,7 @@ pwsh -ExecutionPolicy Bypass -File scripts/dev.ps1 smoke
 pwsh -ExecutionPolicy Bypass -File scripts/dev.ps1 seed
 ```
 
-Task 7 smoke exercises Auth, Event, and private Media upload/list/retrieve through Nginx only. Auth, Event, and Media service ports are intentionally private and are not exposed to the host.
+Task 8 smoke exercises Auth, Event, private Media upload/list/retrieve, and Event-derived Analytics counts through Nginx only. It also verifies that Analytics requires Bearer authentication and internal service paths remain blocked. Auth, Event, Media, and Analytics service ports are intentionally private and are not exposed to the host.
 
 Stop the stack without deleting persistent volumes:
 
@@ -79,7 +79,7 @@ docker compose --profile test up --build -d --wait postgres-test redis-test
 
 The persistent demo PostgreSQL volume is separate from test infrastructure. Test PostgreSQL and Redis are exposed only on loopback host ports for host-run tests.
 
-Task 7 migration and smoke jobs use the `jobs` profile:
+Migration and smoke jobs use the `jobs` profile. Analytics has no service-owned MVP tables or migration job; it reads the Event-owned analytics view through its read-only PostgreSQL role.
 
 ```pwsh
 docker compose --profile jobs run --build --rm auth-migrate

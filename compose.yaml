@@ -108,6 +108,29 @@ services:
       timeout: 3s
       retries: 20
 
+  analytics:
+    build:
+      context: .
+      dockerfile: services/analytics/Dockerfile
+    environment:
+      ANALYTICS_DATABASE_URL: ${ANALYTICS_DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      ANALYTICS_CACHE_TTL_SECONDS: ${ANALYTICS_CACHE_TTL_SECONDS}
+      JWT_ISSUER: ${JWT_ISSUER}
+      JWT_AUDIENCE: ${JWT_AUDIENCE}
+      JWT_PUBLIC_KEY_PATH: ${JWT_PUBLIC_KEY_PATH}
+      EVENT_INTERNAL_TOKEN: ${EVENT_INTERNAL_TOKEN}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./secrets/jwt_public.pem:/run/secrets/jwt_public.pem:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).read()\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   nginx:
     build:
       context: .
@@ -118,6 +141,8 @@ services:
       event:
         condition: service_healthy
       media:
+        condition: service_healthy
+      analytics:
         condition: service_healthy
     ports:
       - "8080:80"
