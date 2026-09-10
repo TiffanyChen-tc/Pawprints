@@ -49,6 +49,106 @@ services:
       timeout: 3s
       retries: 20
 
+  auth:
+    build:
+      context: .
+      dockerfile: services/auth/Dockerfile
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./secrets/jwt_private.pem:/run/secrets/jwt_private.pem:ro
+      - ./secrets/jwt_public.pem:/run/secrets/jwt_public.pem:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).read()\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  event:
+    build:
+      context: .
+      dockerfile: services/event/Dockerfile
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./secrets/jwt_public.pem:/run/secrets/jwt_public.pem:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).read()\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  nginx:
+    build:
+      context: .
+      dockerfile: infra/nginx/Dockerfile
+    depends_on:
+      auth:
+        condition: service_healthy
+      event:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1/healthz >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  auth-migrate:
+    profiles: ["jobs"]
+    build:
+      context: .
+      dockerfile: services/auth/Dockerfile
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./secrets/jwt_private.pem:/run/secrets/jwt_private.pem:ro
+      - ./secrets/jwt_public.pem:/run/secrets/jwt_public.pem:ro
+    working_dir: /repo
+    command: ["python", "-m", "alembic", "-c", "services/auth/alembic.ini", "upgrade", "head"]
+
+  event-migrate:
+    profiles: ["jobs"]
+    build:
+      context: .
+      dockerfile: services/event/Dockerfile
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./secrets/jwt_public.pem:/run/secrets/jwt_public.pem:ro
+    working_dir: /repo
+    command: ["python", "-m", "alembic", "-c", "services/event/alembic.ini", "upgrade", "head"]
+
+  smoke:
+    profiles: ["jobs"]
+    image: python:3.12-slim
+    depends_on:
+      nginx:
+        condition: service_healthy
+    environment:
+      PAWPRINTS_BASE_URL: http://nginx
+    volumes:
+      - ./tests/smoke:/smoke:ro
+    working_dir: /smoke
+    command: ["python", "pawprints_smoke.py"]
+
   redis-test:
     image: redis:7-alpine
     profiles: ["test"]

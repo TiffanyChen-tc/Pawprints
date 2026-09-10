@@ -122,17 +122,34 @@ function Start-PresentServices {
 }
 
 function Wait-ForReady {
-  Start-PresentServices @("auth","event","media","analytics","nginx","prometheus","grafana")
+  Start-PresentServices @("auth","event","nginx","media","analytics","prometheus","grafana")
 }
 
 function Invoke-ComposeJobIfPresent {
   param([string]$ServiceName)
-  $services = & docker compose config --services
+  $services = & docker compose --profile jobs config --services
   if ($LASTEXITCODE -ne 0) {
-    throw "Native command failed with exit code ${LASTEXITCODE}: docker compose config --services"
+    throw "Native command failed with exit code ${LASTEXITCODE}: docker compose --profile jobs config --services"
   }
   if ($services -contains $ServiceName) {
     Invoke-Checked docker compose --profile jobs run --build --rm $ServiceName
+  }
+}
+
+function Assert-NoPublicAuthEventPorts {
+  $configJson = & docker compose config --format json
+  if ($LASTEXITCODE -ne 0) {
+    throw "Native command failed with exit code ${LASTEXITCODE}: docker compose config --format json"
+  }
+  $config = $configJson | ConvertFrom-Json
+  foreach ($serviceName in "auth","event") {
+    $serviceProperty = $config.services.PSObject.Properties[$serviceName]
+    if ($null -ne $serviceProperty) {
+      $portsProperty = $serviceProperty.Value.PSObject.Properties["ports"]
+      if ($null -ne $portsProperty -and @($portsProperty.Value).Count -gt 0) {
+        throw "Service '$serviceName' must not expose host ports."
+      }
+    }
   }
 }
 
@@ -169,13 +186,14 @@ function Invoke-TestSuite {
 }
 
 function Invoke-Migrate {
-  foreach ($job in "auth-migrate","event-migrate","media-migrate") {
+  foreach ($job in "auth-migrate","event-migrate") {
     Invoke-ComposeJobIfPresent $job
   }
 }
 
 function Invoke-Smoke {
   Wait-ForReady
+  Assert-NoPublicAuthEventPorts
   Invoke-Checked docker compose --profile jobs run --build --rm smoke
 }
 
@@ -198,7 +216,7 @@ function Invoke-Demo {
 switch ($Command) {
   "setup" { Ensure-LocalConfig }
   "migrate" { Invoke-Migrate }
-  "up" { Invoke-Checked docker compose up --build -d }
+  "up" { Invoke-Checked docker compose up --build -d --wait }
   "test" { Invoke-TestSuite }
   "smoke" { Invoke-Smoke }
   "seed" { Invoke-Seed }
