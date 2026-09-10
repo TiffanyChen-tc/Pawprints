@@ -142,7 +142,7 @@ function Assert-NoPublicAuthEventPorts {
     throw "Native command failed with exit code ${LASTEXITCODE}: docker compose config --format json"
   }
   $config = $configJson | ConvertFrom-Json
-  foreach ($serviceName in "auth","event") {
+  foreach ($serviceName in "auth","event","media") {
     $serviceProperty = $config.services.PSObject.Properties[$serviceName]
     if ($null -ne $serviceProperty) {
       $portsProperty = $serviceProperty.Value.PSObject.Properties["ports"]
@@ -168,7 +168,11 @@ function Invoke-TestSuite {
     Invoke-Checked python -m alembic -c services/event/alembic.ini upgrade head
     Invoke-Checked python -m alembic -c services/media/alembic.ini upgrade head
 
-    Invoke-Checked python -m pytest packages/pawprints-common/tests services/auth/tests services/event/tests services/media/tests services/analytics/tests -q
+    Invoke-Checked python -m pytest packages/pawprints-common/tests -q
+    Invoke-Checked python -m pytest services/auth/tests -q
+    Invoke-Checked python -m pytest services/event/tests -q
+    Invoke-Checked python -m pytest services/media/tests -q
+    Invoke-Checked python -m pytest services/analytics/tests -q
     if (Test-Path "apps/web/package.json") {
       Invoke-Checked npm --prefix apps/web ci
       Invoke-Checked npm --prefix apps/web test -- --run
@@ -186,7 +190,7 @@ function Invoke-TestSuite {
 }
 
 function Invoke-Migrate {
-  foreach ($job in "auth-migrate","event-migrate") {
+  foreach ($job in "auth-migrate","event-migrate","media-migrate") {
     Invoke-ComposeJobIfPresent $job
   }
 }

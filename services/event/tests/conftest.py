@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 import importlib
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
@@ -77,7 +78,10 @@ def bearer(token: str) -> dict[str, str]:
 
 @pytest.fixture()
 def event_database_url() -> str:
-    return "postgresql+psycopg://pawprints_event_rw:test_event@127.0.0.1:55432/pawprints_test"
+    return os.environ.get(
+        "EVENT_DATABASE_URL",
+        "postgresql+psycopg://pawprints_event_rw:test_event@127.0.0.1:55432/pawprints_test",
+    )
 
 
 @pytest.fixture()
