@@ -14,7 +14,7 @@ def test_dev_test_uses_disposable_service_isolated_python_containers():
     assert "Invoke-Checked python -m pytest" not in script
     assert "Invoke-Checked docker run" not in script
     assert "Invoke-Checked docker build" not in script
-    assert script.count("Invoke-Checked -FilePath docker -Arguments @(") == 12
+    assert script.count("Invoke-Checked -FilePath docker -Arguments @(") == 14
     assert script.count('"-w", "/repo"') == 8
     assert "--network host" not in script
     assert '$testNetwork = "$(Get-ComposeProjectName)_default"' in script
@@ -59,3 +59,18 @@ def test_frontend_dependencies_are_installed_only_when_frontend_tests_exist():
 
     assert 'Get-ChildItem "apps/web/src" -Recurse -File -Include "*.test.*","*.spec.*"' in script
     assert "if ($frontendTests.Count -gt 0)" in script
+    assert "Invoke-Checked npm" not in script
+    assert script.count('"node:22-alpine"') == 2
+    assert script.count('"-w", "/repo/apps/web"') == 2
+    assert re.search(
+        r'Invoke-Checked -FilePath docker -Arguments @\(\s*'
+        r'"run", "--rm", "--mount", \$repoMount, "-w", "/repo/apps/web",\s*'
+        r'"node:22-alpine", "npm", "ci"\s*\)',
+        script,
+    )
+    assert re.search(
+        r'Invoke-Checked -FilePath docker -Arguments @\(\s*'
+        r'"run", "--rm", "--mount", \$repoMount, "-w", "/repo/apps/web",\s*'
+        r'"node:22-alpine", "npm", "test", "--", "--run"\s*\)',
+        script,
+    )

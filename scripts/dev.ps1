@@ -223,8 +223,14 @@ function Invoke-TestSuite {
     )
     $frontendTests = @(Get-ChildItem "apps/web/src" -Recurse -File -Include "*.test.*","*.spec.*" -ErrorAction SilentlyContinue)
     if ($frontendTests.Count -gt 0) {
-      Invoke-Checked npm --prefix apps/web ci
-      Invoke-Checked npm --prefix apps/web test -- --run
+      Invoke-Checked -FilePath docker -Arguments @(
+        "run", "--rm", "--mount", $repoMount, "-w", "/repo/apps/web",
+        "node:22-alpine", "npm", "ci"
+      )
+      Invoke-Checked -FilePath docker -Arguments @(
+        "run", "--rm", "--mount", $repoMount, "-w", "/repo/apps/web",
+        "node:22-alpine", "npm", "test", "--", "--run"
+      )
     }
   } catch {
     Write-Host $_
