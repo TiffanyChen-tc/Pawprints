@@ -1,0 +1,179 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  infrastructure:
+    name: Infrastructure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Compose configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .env.example .env
+          ci_value="$(openssl rand -hex 24)"
+          sed -i "s/CHANGE_ME_GENERATED/${ci_value}/g; s/CHANGE_ME/${ci_value}/g" .env
+          docker compose config -q
+          rm -f .env
+
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    env:
+      COMPOSE_PROJECT_NAME: pawprints-ci-backend-${{ github.run_id }}-${{ github.run_attempt }}
+      AUTH_DATABASE_URL: postgresql+psycopg://pawprints_auth_rw:test_auth@postgres-test:5432/pawprints_test
+      EVENT_DATABASE_URL: postgresql+psycopg://pawprints_event_rw:test_event@postgres-test:5432/pawprints_test
+      MEDIA_DATABASE_URL: postgresql+psycopg://pawprints_media_rw:test_media@postgres-test:5432/pawprints_test
+      ANALYTICS_DATABASE_URL: postgresql+psycopg://pawprints_analytics_ro:test_analytics@postgres-test:5432/pawprints_test
+      REDIS_URL: redis://redis-test:6379/0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start disposable test infrastructure
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose --profile test up --build -d --wait postgres-test redis-test
+      - name: Build disposable service test stages
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --target test -t pawprints-auth-test -f services/auth/Dockerfile .
+          docker build --target test -t pawprints-event-test -f services/event/Dockerfile .
+          docker build --target test -t pawprints-media-test -f services/media/Dockerfile .
+          docker build --target test -t pawprints-analytics-test -f services/analytics/Dockerfile .
+      - name: Migrate isolated databases
+        shell: bash
+        run: |
+          set -euo pipefail
+          network="${COMPOSE_PROJECT_NAME}_default"
+          mount="type=bind,src=${GITHUB_WORKSPACE},dst=/repo"
+          docker run --rm --network "${network}" --mount "${mount}" -w /repo \
+            -e "AUTH_DATABASE_URL=${AUTH_DATABASE_URL}" --entrypoint python pawprints-auth-test \
+            -m alembic -c services/auth/alembic.ini upgrade head
+          docker run --rm --network "${network}" --mount "${mount}" -w /repo \
+            -e "EVENT_DATABASE_URL=${EVENT_DATABASE_URL}" --entrypoint python pawprints-event-test \
+            -m alembic -c services/event/alembic.ini upgrade head
+          docker run --rm --network "${network}" --mount "${mount}" -w /repo \
+            -e "MEDIA_DATABASE_URL=${MEDIA_DATABASE_URL}" --entrypoint python pawprints-media-test \
+            -m alembic -c services/media/alembic.ini upgrade head
+      - name: Run backend test suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          network="${COMPOSE_PROJECT_NAME}_default"
+          mount="type=bind,src=${GITHUB_WORKSPACE},dst=/repo"
+          docker run --rm --network "${network}" --mount "${mount}" -w /repo \
+            --entrypoint python pawprints-auth-test -m pytest \
+            packages/pawprints-common/tests tests/workflow -q
+          docker run --rm --network "${network}" --mount "${mount}" -w /repo \
+            -e "AUTH_DATABASE_URL=${AUTH_DATABASE_URL}" --entrypoint python pawprints-auth-test \
+            -m pytest services/auth/tests -q
+          docker run --rm --network "${network}" --mount "${mount}" -w /repo \
+            -e "EVENT_DATABASE_URL=${EVENT_DATABASE_URL}" \
+            -e "ANALYTICS_DATABASE_URL=${ANALYTICS_DATABASE_URL}" \
+            --add-host analytics.local:127.0.0.1 --entrypoint python pawprints-event-test \
+            -m pytest services/event/tests -q
+          docker run --rm --network "${network}" --mount "${mount}" -w /repo \
+            -e "MEDIA_DATABASE_URL=${MEDIA_DATABASE_URL}" --entrypoint python pawprints-media-test \
+            -m pytest services/media/tests -q
+          docker run --rm --network "${network}" --mount "${mount}" -w /repo \
+            -e "EVENT_DATABASE_URL=${EVENT_DATABASE_URL}" \
+            -e "ANALYTICS_DATABASE_URL=${ANALYTICS_DATABASE_URL}" \
+            -e "REDIS_URL=${REDIS_URL}" --entrypoint python pawprints-analytics-test \
+            -m pytest services/analytics/tests -q
+      - name: Remove disposable test infrastructure
+        if: always()
+        shell: bash
+        run: docker compose --profile test down --volumes --remove-orphans || true
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: apps/web
+        run: npm ci
+      - name: Run frontend tests
+        working-directory: apps/web
+        run: npm test -- --run
+      - name: Type-check frontend
+        working-directory: apps/web
+        run: npm run typecheck
+      - name: Build frontend
+        working-directory: apps/web
+        run: npm run build
+
+  integration:
+    name: Integration
+    runs-on: ubuntu-latest
+    env:
+      COMPOSE_PROJECT_NAME: pawprints-ci-integration-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate ephemeral configuration and keys
+        shell: bash
+        run: |
+          set -euo pipefail
+          auth_password="$(openssl rand -hex 24)"
+          event_password="$(openssl rand -hex 24)"
+          media_password="$(openssl rand -hex 24)"
+          analytics_password="$(openssl rand -hex 24)"
+          admin_password="$(openssl rand -hex 24)"
+          event_token="$(openssl rand -hex 32)"
+          media_token="$(openssl rand -hex 32)"
+          analytics_token="$(openssl rand -hex 32)"
+          cp .env.example .env
+          sed -i \
+            -e "s|^POSTGRES_ADMIN_PASSWORD=.*|POSTGRES_ADMIN_PASSWORD=${admin_password}|" \
+            -e "s|^AUTH_DB_PASSWORD=.*|AUTH_DB_PASSWORD=${auth_password}|" \
+            -e "s|^EVENT_DB_PASSWORD=.*|EVENT_DB_PASSWORD=${event_password}|" \
+            -e "s|^MEDIA_DB_PASSWORD=.*|MEDIA_DB_PASSWORD=${media_password}|" \
+            -e "s|^ANALYTICS_DB_PASSWORD=.*|ANALYTICS_DB_PASSWORD=${analytics_password}|" \
+            -e "s|^AUTH_DATABASE_URL=.*|AUTH_DATABASE_URL=postgresql+psycopg://pawprints_auth_rw:${auth_password}@postgres:5432/pawprints|" \
+            -e "s|^EVENT_DATABASE_URL=.*|EVENT_DATABASE_URL=postgresql+psycopg://pawprints_event_rw:${event_password}@postgres:5432/pawprints|" \
+            -e "s|^MEDIA_DATABASE_URL=.*|MEDIA_DATABASE_URL=postgresql+psycopg://pawprints_media_rw:${media_password}@postgres:5432/pawprints|" \
+            -e "s|^ANALYTICS_DATABASE_URL=.*|ANALYTICS_DATABASE_URL=postgresql+psycopg://pawprints_analytics_ro:${analytics_password}@postgres:5432/pawprints|" \
+            -e "s|^EVENT_INTERNAL_TOKEN=.*|EVENT_INTERNAL_TOKEN=${event_token}|" \
+            -e "s|^MEDIA_INTERNAL_TOKEN=.*|MEDIA_INTERNAL_TOKEN=${media_token}|" \
+            -e "s|^ANALYTICS_INTERNAL_TOKEN=.*|ANALYTICS_INTERNAL_TOKEN=${analytics_token}|" \
+            .env
+          mkdir -p secrets
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out secrets/jwt_private.pem
+          openssl rsa -pubout -in secrets/jwt_private.pem -out secrets/jwt_public.pem
+      - name: Apply migrations
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose --profile jobs run --build --rm auth-migrate
+          docker compose --profile jobs run --build --rm event-migrate
+          docker compose --profile jobs run --build --rm media-migrate
+      - name: Start the production-shaped stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose up --build -d --wait postgres redis auth event media analytics nginx
+      - name: Run public-boundary smoke
+        shell: bash
+        run: docker compose --profile jobs run --build --rm smoke
+      - name: Tear down integration resources
+        if: always()
+        shell: bash
+        run: |
+          docker compose --profile jobs down --volumes --remove-orphans || true
+          rm -f .env secrets/jwt_private.pem secrets/jwt_public.pem
