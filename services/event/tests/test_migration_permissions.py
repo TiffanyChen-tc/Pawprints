@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from sqlalchemy import create_engine, text
 
 
@@ -17,7 +19,11 @@ def test_event_migration_places_objects_and_grants_only_analytics_view(event_db_
 
 
 def test_analytics_role_can_select_view_but_not_event_base_tables():
-    engine = create_engine("postgresql+psycopg://pawprints_analytics_ro:test_analytics@127.0.0.1:55432/pawprints_test")
+    database_url = os.environ.get(
+        "ANALYTICS_DATABASE_URL",
+        "postgresql+psycopg://pawprints_analytics_ro:test_analytics@127.0.0.1:55432/pawprints_test",
+    )
+    engine = create_engine(database_url)
     with engine.connect() as connection:
         assert connection.execute(text("select count(*) from events.analytics_event_facts")).scalar_one() >= 0
         try:

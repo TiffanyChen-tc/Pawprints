@@ -76,6 +76,11 @@ def small_png() -> bytes:
     return b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGNMmXaCAQAEpwIWeLwOZAAAAABJRU5ErkJggg==")
 
 
+def header_value(headers: dict[str, str], name: str) -> str | None:
+    normalized_name = name.casefold()
+    return next((value for key, value in headers.items() if key.casefold() == normalized_name), None)
+
+
 def small_jpeg() -> bytes:
     return b64decode("/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAMAAwDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDxGiiitjI//9k=")
 
@@ -193,7 +198,8 @@ def main() -> None:
         expected=201,
     )
     event_id = event["id"]
-    event_etag = event_headers.get("ETag")
+    event_etag = header_value(event_headers, "ETag")
+    assert event_etag, "created event did not return an ETag"
     assert event["title"] == "Smoke Pawprint"
 
     client.json_request(
@@ -271,15 +277,20 @@ def main() -> None:
     _, _, search = client.json_request("GET", "/api/v1/events/search?keyword=Smoke+Pawprint", token=token)
     assert any(item["id"] == event_id for item in search["items"]), "collection search route did not include created event"
 
-    if event_etag:
-        _, _, patched = client.json_request(
-            "PATCH",
-            f"/api/v1/events/{event_id}?source=smoke",
-            token=token,
-            headers={"If-Match": event_etag},
-            payload={"mood": "great"},
-        )
-        assert patched["mood"] == "great", "nested event route did not preserve method, URI, or query"
+    _, patched_headers, patched = client.json_request(
+        "PATCH",
+        f"/api/v1/events/{event_id}?source=smoke",
+        token=token,
+        headers={"If-Match": event_etag},
+        payload={"mood": "great"},
+    )
+    assert patched["mood"] == "great", "nested event route did not preserve method, URI, or query"
+    patched_etag = header_value(patched_headers, "ETag")
+    assert patched_etag, "patched event did not return an ETag"
+
+    _, _, counts_after_patch = client.json_request("GET", analytics_path, token=token)
+    cached_counts = {item["category_id"]: item["count"] for item in counts_after_patch["items"]}
+    assert cached_counts[category_id] == 2, "Analytics did not retain both events after patch"
 
     client.request(
         "GET",
@@ -292,6 +303,31 @@ def main() -> None:
         },
         expected=(404, 401, 403),
     )
+
+    client.request(
+        "DELETE",
+        f"/api/v1/events/{event_id}",
+        token=token,
+        headers={"If-Match": patched_etag},
+        expected=204,
+    )
+    client.request("GET", f"/api/v1/events/{event_id}", token=token, expected=404)
+
+    _, _, timeline_after_delete = client.json_request("GET", f"/api/v1/events/timeline?{query}", token=token)
+    assert all(item["id"] != event_id for item in timeline_after_delete["items"]), "timeline retained deleted event"
+
+    _, _, search_after_delete = client.json_request(
+        "GET", "/api/v1/events/search?keyword=Smoke+Pawprint", token=token
+    )
+    assert all(item["id"] != event_id for item in search_after_delete["items"]), "search retained deleted event"
+
+    client.request("GET", f"/api/v1/media/events/{event_id}", token=token, expected=404)
+    for item in media:
+        client.request("GET", f"/api/v1/media/{item['id']}", token=token, expected=404)
+
+    _, _, counts_after_delete = client.json_request("GET", analytics_path, token=token)
+    updated_counts = {item["category_id"]: item["count"] for item in counts_after_delete["items"]}
+    assert updated_counts[category_id] == 1, "Analytics retained deleted event"
 
     print("Pawprints public-boundary smoke passed.")
 

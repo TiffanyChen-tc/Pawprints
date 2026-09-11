@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     event_internal_token: str
     media_internal_token: str
     analytics_internal_token: str
+    media_service_url: str = "http://media:8000"
     analytics_service_url: str = "http://analytics:8000"
 
     model_config = SettingsConfigDict(env_prefix="", extra="ignore")

@@ -3,7 +3,10 @@ from __future__ import annotations
 from conftest import create_event, patch_event
 
 
-def test_create_get_patch_and_delete_event_with_etags(client, token_a, category_a):
+def test_create_get_patch_and_delete_event_with_etags(client, monkeypatch, token_a, category_a):
+    import app.events
+
+    monkeypatch.setattr(app.events, "cleanup_event_media", lambda *args: None)
     created = create_event(client, token_a, category_a["id"], latitude=25.05, longitude=121.53)
 
     assert created.status_code == 201

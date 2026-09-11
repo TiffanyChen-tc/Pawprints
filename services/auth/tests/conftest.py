@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import importlib
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -39,7 +40,10 @@ def private_key_path() -> Iterator[str]:
 
 @pytest.fixture()
 def auth_database_url() -> str:
-    return "postgresql+psycopg://pawprints_auth_rw:test_auth@127.0.0.1:55432/pawprints_test"
+    return os.environ.get(
+        "AUTH_DATABASE_URL",
+        "postgresql+psycopg://pawprints_auth_rw:test_auth@127.0.0.1:55432/pawprints_test",
+    )
 
 
 @pytest.fixture()

@@ -104,5 +104,7 @@ def rename_category(category_id: UUID, payload: CategoryUpdate, request: Request
         return api_error(request, "category_name_exists", "Category name already exists.", 409)
     updated = db.scalar(select(Category).where(Category.id == category_id, Category.user_id == user_id))
     response.headers["ETag"] = etag(updated.version)
+    body = category_out(updated)
+    db.rollback()
     invalidate_user_analytics(user_id, request_id(request), settings)
-    return category_out(updated)
+    return body

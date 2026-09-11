@@ -4,11 +4,12 @@ from datetime import date as LocalDate, datetime, timezone
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
+import httpx
 from fastapi import APIRouter, Depends, Header, Request, Response, status
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session, joinedload
 
-from app.clients import invalidate_user_analytics
+from app.clients import cleanup_event_media, invalidate_user_analytics
 from app.config import Settings, get_settings
 from app.db import get_db
 from app.http import api_error, authenticated_user_id, etag, not_found, parse_if_match, request_id
@@ -83,8 +84,10 @@ def create_event(payload: EventCreate, request: Request, response: Response, aut
     db.refresh(event)
     event.category = category
     response.headers["ETag"] = etag(event.version)
+    body = event_out(event)
+    db.rollback()
     invalidate_user_analytics(user_id, request_id(request), settings)
-    return event_out(event)
+    return body
 
 
 @router.get("/timeline")
@@ -198,8 +201,10 @@ def patch_event(event_id: UUID, payload: EventPatch, request: Request, response:
     db.commit()
     updated = get_owned_event(db, event_id, user_id)
     response.headers["ETag"] = etag(updated.version)
+    body = event_out(updated)
+    db.rollback()
     invalidate_user_analytics(user_id, request_id(request), settings)
-    return event_out(updated)
+    return body
 
 
 @router.delete("/{event_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -210,14 +215,25 @@ def delete_event(event_id: UUID, request: Request, response: Response, authoriza
     expected_version = parse_if_match(if_match)
     if expected_version is None:
         return api_error(request, "precondition_required", "If-Match is required.", 428)
-    current = db.scalar(select(Event.id).where(Event.id == event_id, Event.user_id == user_id))
-    if current is None:
+    current_version = db.scalar(select(Event.version).where(Event.id == event_id, Event.user_id == user_id))
+    if current_version is None:
         return not_found(request)
+    if current_version != expected_version:
+        db.rollback()
+        return api_error(request, "stale_version", "This Pawprint changed since you opened it.", 412)
+
+    db.rollback()
+    propagated_request_id = request_id(request)
+    try:
+        cleanup_event_media(event_id, propagated_request_id, settings)
+    except httpx.HTTPError:
+        return api_error(request, "media_cleanup_failed", "Media cleanup failed.", 502)
+
     result = db.execute(delete(Event).where(Event.id == event_id, Event.user_id == user_id, Event.version == expected_version).returning(Event.id)).first()
     if result is None:
         db.rollback()
         return api_error(request, "stale_version", "This Pawprint changed since you opened it.", 412)
     db.commit()
-    invalidate_user_analytics(user_id, request_id(request), settings)
+    invalidate_user_analytics(user_id, propagated_request_id, settings)
     response.status_code = status.HTTP_204_NO_CONTENT
     return None

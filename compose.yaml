@@ -162,9 +162,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    volumes:
-      - ./secrets/jwt_private.pem:/run/secrets/jwt_private.pem:ro
-      - ./secrets/jwt_public.pem:/run/secrets/jwt_public.pem:ro
     working_dir: /repo
     command: ["python", "-m", "alembic", "-c", "services/auth/alembic.ini", "upgrade", "head"]
 

@@ -158,22 +158,71 @@ function Invoke-TestSuite {
   try {
     Invoke-Checked docker compose --profile test up --build -d --wait postgres-test redis-test
 
-    $env:AUTH_DATABASE_URL = "postgresql+psycopg://pawprints_auth_rw:test_auth@127.0.0.1:55432/pawprints_test"
-    $env:EVENT_DATABASE_URL = "postgresql+psycopg://pawprints_event_rw:test_event@127.0.0.1:55432/pawprints_test"
-    $env:MEDIA_DATABASE_URL = "postgresql+psycopg://pawprints_media_rw:test_media@127.0.0.1:55432/pawprints_test"
-    $env:ANALYTICS_DATABASE_URL = "postgresql+psycopg://pawprints_analytics_ro:test_analytics@127.0.0.1:55432/pawprints_test"
-    $env:REDIS_URL = "redis://127.0.0.1:56379/0"
+    $env:AUTH_DATABASE_URL = "postgresql+psycopg://pawprints_auth_rw:test_auth@postgres-test:5432/pawprints_test"
+    $env:EVENT_DATABASE_URL = "postgresql+psycopg://pawprints_event_rw:test_event@postgres-test:5432/pawprints_test"
+    $env:MEDIA_DATABASE_URL = "postgresql+psycopg://pawprints_media_rw:test_media@postgres-test:5432/pawprints_test"
+    $env:ANALYTICS_DATABASE_URL = "postgresql+psycopg://pawprints_analytics_ro:test_analytics@postgres-test:5432/pawprints_test"
+    $env:REDIS_URL = "redis://redis-test:6379/0"
+    $testNetwork = "$(Get-ComposeProjectName)_default"
+    $repoMount = "type=bind,source=$((Get-Location).Path),target=/repo"
 
-    Invoke-Checked python -m alembic -c services/auth/alembic.ini upgrade head
-    Invoke-Checked python -m alembic -c services/event/alembic.ini upgrade head
-    Invoke-Checked python -m alembic -c services/media/alembic.ini upgrade head
+    Invoke-Checked -FilePath docker -Arguments @(
+      "build", "--target", "test", "-t", "pawprints-auth-test", "-f", "services/auth/Dockerfile", "."
+    )
+    Invoke-Checked -FilePath docker -Arguments @(
+      "build", "--target", "test", "-t", "pawprints-event-test", "-f", "services/event/Dockerfile", "."
+    )
+    Invoke-Checked -FilePath docker -Arguments @(
+      "build", "--target", "test", "-t", "pawprints-media-test", "-f", "services/media/Dockerfile", "."
+    )
+    Invoke-Checked -FilePath docker -Arguments @(
+      "build", "--target", "test", "-t", "pawprints-analytics-test", "-f", "services/analytics/Dockerfile", "."
+    )
 
-    Invoke-Checked python -m pytest packages/pawprints-common/tests -q
-    Invoke-Checked python -m pytest services/auth/tests -q
-    Invoke-Checked python -m pytest services/event/tests -q
-    Invoke-Checked python -m pytest services/media/tests -q
-    Invoke-Checked python -m pytest services/analytics/tests -q
-    if (Test-Path "apps/web/package.json") {
+    Invoke-Checked -FilePath docker -Arguments @(
+      "run", "--rm", "--network", $testNetwork, "--mount", $repoMount, "-w", "/repo",
+      "-e", "AUTH_DATABASE_URL=$env:AUTH_DATABASE_URL", "--entrypoint", "python", "pawprints-auth-test",
+      "-m", "alembic", "-c", "services/auth/alembic.ini", "upgrade", "head"
+    )
+    Invoke-Checked -FilePath docker -Arguments @(
+      "run", "--rm", "--network", $testNetwork, "--mount", $repoMount, "-w", "/repo",
+      "-e", "EVENT_DATABASE_URL=$env:EVENT_DATABASE_URL", "--entrypoint", "python", "pawprints-event-test",
+      "-m", "alembic", "-c", "services/event/alembic.ini", "upgrade", "head"
+    )
+    Invoke-Checked -FilePath docker -Arguments @(
+      "run", "--rm", "--network", $testNetwork, "--mount", $repoMount, "-w", "/repo",
+      "-e", "MEDIA_DATABASE_URL=$env:MEDIA_DATABASE_URL", "--entrypoint", "python", "pawprints-media-test",
+      "-m", "alembic", "-c", "services/media/alembic.ini", "upgrade", "head"
+    )
+
+    Invoke-Checked -FilePath docker -Arguments @(
+      "run", "--rm", "--network", $testNetwork, "--mount", $repoMount, "-w", "/repo",
+      "--entrypoint", "python", "pawprints-auth-test", "-m", "pytest",
+      "packages/pawprints-common/tests", "tests/workflow", "-q"
+    )
+    Invoke-Checked -FilePath docker -Arguments @(
+      "run", "--rm", "--network", $testNetwork, "--mount", $repoMount, "-w", "/repo",
+      "-e", "AUTH_DATABASE_URL=$env:AUTH_DATABASE_URL", "--entrypoint", "python", "pawprints-auth-test",
+      "-m", "pytest", "services/auth/tests", "-q"
+    )
+    Invoke-Checked -FilePath docker -Arguments @(
+      "run", "--rm", "--network", $testNetwork, "--mount", $repoMount, "-w", "/repo",
+      "-e", "EVENT_DATABASE_URL=$env:EVENT_DATABASE_URL", "-e", "ANALYTICS_DATABASE_URL=$env:ANALYTICS_DATABASE_URL",
+      "--entrypoint", "python", "pawprints-event-test", "-m", "pytest", "services/event/tests", "-q"
+    )
+    Invoke-Checked -FilePath docker -Arguments @(
+      "run", "--rm", "--network", $testNetwork, "--mount", $repoMount, "-w", "/repo",
+      "-e", "MEDIA_DATABASE_URL=$env:MEDIA_DATABASE_URL", "--entrypoint", "python", "pawprints-media-test",
+      "-m", "pytest", "services/media/tests", "-q"
+    )
+    Invoke-Checked -FilePath docker -Arguments @(
+      "run", "--rm", "--network", $testNetwork, "--mount", $repoMount, "-w", "/repo",
+      "-e", "EVENT_DATABASE_URL=$env:EVENT_DATABASE_URL", "-e", "ANALYTICS_DATABASE_URL=$env:ANALYTICS_DATABASE_URL",
+      "-e", "REDIS_URL=$env:REDIS_URL", "--entrypoint", "python", "pawprints-analytics-test",
+      "-m", "pytest", "services/analytics/tests", "-q"
+    )
+    $frontendTests = @(Get-ChildItem "apps/web/src" -Recurse -File -Include "*.test.*","*.spec.*" -ErrorAction SilentlyContinue)
+    if ($frontendTests.Count -gt 0) {
       Invoke-Checked npm --prefix apps/web ci
       Invoke-Checked npm --prefix apps/web test -- --run
     }
