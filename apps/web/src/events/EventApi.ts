@@ -1,7 +1,7 @@
 import { apiRequest } from "../api/client";
 
 export interface Category { id: string; name: string; version: number }
-export interface Event { id: string; title: string; category_id: string; category_name: string; description: string | null; mood: string | null; location_name: string | null; latitude: number | null; longitude: number | null; occurred_at: string; timezone: string; local_date: string; version: number; etag: string }
+export interface Event { id: string; title: string; category_id: string; category_name: string; description: string | null; mood: string | null; location_name: string | null; latitude: number | null; longitude: number | null; occurred_at: string; timezone: string; local_date: string; version: number; etag: string; media?: import("../media/MediaApi").Media[] }
 export type Mood = "great" | "good" | "neutral" | "low" | "bad";
 export interface EventInput { title: string; category_id: string; local_datetime: string; timezone: string; description?: string | null; mood?: Mood | null; location_name?: string | null; latitude?: number | null; longitude?: number | null }
 function withEtag(event: Omit<Event, "etag">, headers: Headers): Event { return { ...event, etag: headers.get("ETag") ?? `\"${event.version}\"` }; }
