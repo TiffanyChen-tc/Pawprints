@@ -7,12 +7,13 @@ from fastapi import Header, Request
 from pawprints_common.errors import error_response
 from pawprints_common.internal_auth import InternalAuthError, verify_internal_request
 from pawprints_common.jwt import JWTValidationError, verify_access_token
+from pawprints_common.request_context import request_id_for
 
 from app.config import Settings
 
 
 def request_id(request: Request) -> str:
-    return request.headers.get("X-Request-Id", "")
+    return request_id_for(request)
 
 
 def api_error(request: Request, code: str, message: str, status_code: int):

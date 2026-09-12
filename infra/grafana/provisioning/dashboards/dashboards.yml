@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: Pawprints
+    orgId: 1
+    folder: Pawprints
+    type: file
+    disableDeletion: false
+    editable: false
+    options:
+      path: /var/lib/grafana/dashboards

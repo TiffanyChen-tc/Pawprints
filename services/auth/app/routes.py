@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from pawprints_common.errors import error_response
 from pawprints_common.jwt import JWTValidationError, verify_access_token
+from pawprints_common.request_context import request_id_for
 
 from app.config import Settings, get_settings
 from app.db import get_db
@@ -107,7 +108,7 @@ def make_refresh_session(db: Session, user: User, settings: Settings) -> str:
 
 def auth_error(response: Response, code: str, message: str, status_code: int, request: Request):
     no_store(response)
-    result = error_response(code, message, status_code, request.headers.get("X-Request-Id", ""))
+    result = error_response(code, message, status_code, request_id_for(request))
     result.headers["Cache-Control"] = "no-store"
     return result
 
@@ -215,7 +216,7 @@ def logout(request: Request, response: Response, db: Session = Depends(get_db), 
 @router.get("/me")
 def me(request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
     if not authorization or not authorization.startswith("Bearer "):
-        return error_response("not_authenticated", "Authentication is required.", 401, request.headers.get("X-Request-Id", ""))
+        return error_response("not_authenticated", "Authentication is required.", 401, request_id_for(request))
     try:
         authenticated = verify_access_token(
             authorization.removeprefix("Bearer "),
@@ -225,8 +226,8 @@ def me(request: Request, authorization: str | None = Header(default=None), db: S
         )
         user_id = authenticated.user_id
     except JWTValidationError:
-        return error_response("not_authenticated", "Authentication is required.", 401, request.headers.get("X-Request-Id", ""))
+        return error_response("not_authenticated", "Authentication is required.", 401, request_id_for(request))
     user = db.get(User, user_id)
     if user is None:
-        return error_response("not_authenticated", "Authentication is required.", 401, request.headers.get("X-Request-Id", ""))
+        return error_response("not_authenticated", "Authentication is required.", 401, request_id_for(request))
     return user_payload(user)
