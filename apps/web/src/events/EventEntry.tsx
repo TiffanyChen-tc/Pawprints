@@ -6,7 +6,7 @@ import { getEventMedia, type Media } from "../media/MediaApi";
 import type { Event } from "./EventApi";
 import MarkdownDescription from "./MarkdownDescription";
 
-export default function EventEntry({ event, onEdit, onDelete, loadMedia = getEventMedia }: { event: Event; onEdit: (event: Event) => void; onDelete: (event: Event) => void; loadMedia?: (eventId: string) => Promise<Media[]> }) {
+export default function EventEntry({ event, onEdit, onDelete, loadMedia = getEventMedia }: { event: Event; onEdit?: (event: Event) => void; onDelete?: (event: Event) => void; loadMedia?: (eventId: string) => Promise<Media[]> }) {
   const [expanded, setExpanded] = useState(false);
   const [media, setMedia] = useState<Media[] | null>(null);
   const [mediaError, setMediaError] = useState(false);
@@ -29,7 +29,7 @@ export default function EventEntry({ event, onEdit, onDelete, loadMedia = getEve
       {event.description && <MarkdownDescription source={event.description} />}
       {media && <MediaCarousel media={media} />}
       {mediaError && <p className="media-error">Images could not load. <button type="button" className="text-button" onClick={loadPrivateMedia}>Retry images</button></p>}
-      <div className="entry-actions"><button type="button" className="secondary-button" onClick={() => onEdit(event)} aria-label={`Edit ${event.title}`}><Pencil aria-hidden="true" size={16} /> Edit</button><button type="button" className="danger" onClick={() => onDelete(event)} aria-label={`Delete ${event.title}`}><Trash2 aria-hidden="true" size={16} /> Delete</button></div>
+      {(onEdit || onDelete) && <div className="entry-actions">{onEdit && <button type="button" className="secondary-button" onClick={() => onEdit(event)} aria-label={`Edit ${event.title}`}><Pencil aria-hidden="true" size={16} /> Edit</button>}{onDelete && <button type="button" className="danger" onClick={() => onDelete(event)} aria-label={`Delete ${event.title}`}><Trash2 aria-hidden="true" size={16} /> Delete</button>}</div>}
     </div>}
   </article>;
 }
