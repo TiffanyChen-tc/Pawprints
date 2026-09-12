@@ -2,11 +2,11 @@ import { useEffect, useState } from "react";
 import { ChevronDown, Pencil, Trash2 } from "lucide-react";
 
 import MediaCarousel from "../media/MediaCarousel";
-import { getEventMedia, type Media } from "../media/MediaApi";
+import { fetchMediaObjectUrl as defaultFetch, getEventMedia, type Media } from "../media/MediaApi";
 import type { Event } from "./EventApi";
 import MarkdownDescription from "./MarkdownDescription";
 
-export default function EventEntry({ event, onEdit, onDelete, loadMedia = getEventMedia }: { event: Event; onEdit?: (event: Event) => void; onDelete?: (event: Event) => void; loadMedia?: (eventId: string) => Promise<Media[]> }) {
+export default function EventEntry({ event, onEdit, onDelete, loadMedia = getEventMedia, fetchMediaObjectUrl = defaultFetch }: { event: Event; onEdit?: (event: Event) => void; onDelete?: (event: Event) => void; loadMedia?: (eventId: string) => Promise<Media[]>; fetchMediaObjectUrl?: (id: string) => Promise<string> }) {
   const [expanded, setExpanded] = useState(false);
   const [media, setMedia] = useState<Media[] | null>(null);
   const [mediaError, setMediaError] = useState(false);
@@ -27,7 +27,7 @@ export default function EventEntry({ event, onEdit, onDelete, loadMedia = getEve
       {event.mood && <p>Mood: {event.mood}</p>}
       {event.location_name && <p>{event.location_name}</p>}
       {event.description && <MarkdownDescription source={event.description} />}
-      {media && <MediaCarousel media={media} />}
+      {media && <MediaCarousel media={media} fetchMediaObjectUrl={fetchMediaObjectUrl} />}
       {mediaError && <p className="media-error">Images could not load. <button type="button" className="text-button" onClick={loadPrivateMedia}>Retry images</button></p>}
       {(onEdit || onDelete) && <div className="entry-actions">{onEdit && <button type="button" className="secondary-button" onClick={() => onEdit(event)} aria-label={`Edit ${event.title}`}><Pencil aria-hidden="true" size={16} /> Edit</button>}{onDelete && <button type="button" className="danger" onClick={() => onDelete(event)} aria-label={`Delete ${event.title}`}><Trash2 aria-hidden="true" size={16} /> Delete</button>}</div>}
     </div>}

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { configureApiClient, createApiClient } from "../api/client";
-import { fetchMediaObjectUrl } from "./MediaApi";
+import { deleteMedia, fetchMediaObjectUrl } from "./MediaApi";
 
 describe("fetchMediaObjectUrl", () => {
   afterEach(() => {
@@ -26,6 +26,25 @@ describe("fetchMediaObjectUrl", () => {
     );
     expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get("Authorization")).toBe("Bearer runtime-access-token");
     expect(fetchMock.mock.calls[0]?.[0]).not.toContain("runtime-access-token");
+    restore();
+  });
+
+  it("deletes media through the public authenticated Media API", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    const restore = configureApiClient(createApiClient({
+      fetch: fetchMock,
+      getAccessToken: () => "runtime-access-token",
+      refresh: vi.fn(),
+      onAuthFailure: vi.fn(),
+    }));
+
+    await deleteMedia("media-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/media/media-1",
+      expect.objectContaining({ credentials: "include", method: "DELETE" }),
+    );
+    expect(fetchMock.mock.calls[0]?.[0]).not.toContain("/internal/");
     restore();
   });
 });

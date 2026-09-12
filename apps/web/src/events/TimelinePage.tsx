@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Plus } from "lucide-react";
 
 import { ApiError } from "../api/client";
-import { deleteEvent as defaultDelete, getCategories, getEvent as defaultGet, getTimeline, updateEvent as defaultUpdate, type Category, type Event } from "./EventApi";
+import { deleteMedia as defaultDeleteMedia, fetchMediaObjectUrl as defaultFetchMediaObjectUrl, getEventMedia, uploadEventMedia as defaultUploadEventMedia, type Media } from "../media/MediaApi";
+import { createEvent as defaultCreate, deleteEvent as defaultDelete, getCategories, getEvent as defaultGet, getTimeline, updateEvent as defaultUpdate, type Category, type Event, type EventInput } from "./EventApi";
 import EventEntry from "./EventEntry";
 import EventForm from "./EventForm";
 
@@ -25,10 +26,15 @@ type TimelinePageProps = {
   loadCategories?: () => Promise<Category[]>;
   removeEvent?: (id: string, etag: string) => Promise<void>;
   loadEvent?: (id: string) => Promise<Event>;
+  createEvent?: (input: EventInput) => Promise<Event>;
+  loadMedia?: (id: string) => Promise<Media[]>;
+  uploadEventMedia?: (id: string, files: File[]) => Promise<Media[]>;
+  deleteMedia?: (id: string) => Promise<void>;
+  fetchMediaObjectUrl?: (id: string) => Promise<string>;
   updateEvent?: typeof defaultUpdate;
 };
 
-export default function TimelinePage({ initialDate, today = localDate(), loadTimeline = getTimeline, loadCategories = getCategories, removeEvent = defaultDelete, loadEvent = defaultGet, updateEvent = defaultUpdate }: TimelinePageProps) {
+export default function TimelinePage({ initialDate, today = localDate(), loadTimeline = getTimeline, loadCategories = getCategories, removeEvent = defaultDelete, loadEvent = defaultGet, createEvent = defaultCreate, loadMedia = getEventMedia, uploadEventMedia = defaultUploadEventMedia, deleteMedia = defaultDeleteMedia, fetchMediaObjectUrl = defaultFetchMediaObjectUrl, updateEvent = defaultUpdate }: TimelinePageProps) {
   const [date, setDate] = useState(initialDate ?? today);
   const [events, setEvents] = useState<Event[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -36,24 +42,31 @@ export default function TimelinePage({ initialDate, today = localDate(), loadTim
   const [error, setError] = useState("");
   const [formEvent, setFormEvent] = useState<Event | null | undefined>(undefined);
   const [conflict, setConflict] = useState<Event | null>(null);
+  const timelineRequest = useRef(0);
+
+  const reloadTimeline = useCallback(async (targetDate: string) => {
+    const requestNumber = timelineRequest.current + 1;
+    timelineRequest.current = requestNumber;
+    setLoading(true); setError("");
+    try {
+      const [next, cats] = await Promise.all([loadTimeline(targetDate), loadCategories()]);
+      if (timelineRequest.current !== requestNumber) return;
+      setEvents([...next].sort((left, right) => left.occurred_at.localeCompare(right.occurred_at)));
+      setCategories(cats);
+    } catch {
+      if (timelineRequest.current === requestNumber) setError("Could not load your timeline.");
+    } finally {
+      if (timelineRequest.current === requestNumber) setLoading(false);
+    }
+  }, [loadCategories, loadTimeline]);
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
-    setError("");
-    void Promise.all([loadTimeline(date), loadCategories()]).then(([next, cats]) => {
-      if (!active) return;
-      setEvents([...next].sort((left, right) => left.occurred_at.localeCompare(right.occurred_at)));
-      setCategories(cats);
-    }).catch(() => {
-      if (active) setError("Could not load your timeline.");
-    }).finally(() => {
-      if (active) setLoading(false);
-    });
+    void reloadTimeline(date).then(() => { if (!active) return; });
     return () => {
       active = false;
     };
-  }, [date, loadCategories, loadTimeline]);
+  }, [date, reloadTimeline]);
 
   const reviewLatest = async (event: Event, openForEdit = false) => {
     try {
@@ -70,7 +83,7 @@ export default function TimelinePage({ initialDate, today = localDate(), loadTim
     if (!window.confirm(`Delete ${event.title}?`)) return;
     try {
       await removeEvent(event.id, event.etag);
-      setEvents((items) => items.filter((item) => item.id !== event.id));
+      await reloadTimeline(date);
     } catch (reason) {
       if ((reason instanceof ApiError ? reason.status : (reason as { status?: number }).status) === 412) {
         await reviewLatest(event);
@@ -80,15 +93,15 @@ export default function TimelinePage({ initialDate, today = localDate(), loadTim
     }
   };
 
-  const saved = (event: Event) => {
-    setEvents((items) => {
-      const withoutSaved = items.filter((item) => item.id !== event.id);
-      return [...withoutSaved, event].sort((left, right) => left.occurred_at.localeCompare(right.occurred_at));
-    });
-    setFormEvent(undefined);
+  const openForEdit = async (event: Event) => {
+    try { setFormEvent({ ...event, media: await loadMedia(event.id) }); }
+    catch { setError("Could not load this Pawprint's images."); }
   };
 
   return <section className="timeline">
+    {error && <p role="alert" className="form-error">{error}</p>}
+    {conflict && <p role="alert" className="form-error">This Pawprint changed since you loaded it. Review the latest version: {conflict.title}</p>}
+    {formEvent === undefined ? <>
     <div className="timeline-heading"><p className="eyebrow">Private journal</p><h1>Your Pawprints</h1></div>
     <div className="timeline-toolbar">
       <button type="button" className="icon-button" aria-label="Previous day" title="Previous day" onClick={() => setDate(shift(date, -1))}><ChevronLeft aria-hidden="true" /></button>
@@ -97,11 +110,9 @@ export default function TimelinePage({ initialDate, today = localDate(), loadTim
       <button type="button" className="secondary-button" onClick={() => setDate(today)}>Today</button>
       <button type="button" onClick={() => setFormEvent(null)}><Plus aria-hidden="true" size={16} /> New Pawprint</button>
     </div>
-    {formEvent !== undefined && <EventForm key={`${formEvent?.id ?? "new"}-${formEvent?.etag ?? ""}`} categories={categories} event={formEvent ?? undefined} updateEvent={updateEvent} onCategoryCreated={(category) => setCategories((items) => [...items, category])} onConflict={(event) => void reviewLatest(event, true)} onCompleted={() => setFormEvent(undefined)} onSaved={saved} />}
     {loading && <p role="status">Loading timeline...</p>}
-    {error && <p role="alert" className="form-error">{error}</p>}
-    {conflict && <p role="alert" className="form-error">This Pawprint changed since you loaded it. Review the latest version: {conflict.title}</p>}
     {!loading && !error && events.length === 0 && <p className="empty-state">No Pawprints for this date yet.</p>}
-    <div className="timeline-entries">{events.map((event) => <EventEntry key={event.id} event={event} onEdit={(selected) => setFormEvent(selected)} onDelete={remove} />)}</div>
+    <div className="timeline-entries">{events.map((event) => <EventEntry key={event.id} event={event} onEdit={(selected) => void openForEdit(selected)} onDelete={remove} loadMedia={loadMedia} fetchMediaObjectUrl={fetchMediaObjectUrl} />)}</div>
+    </> : <EventForm key={`${formEvent?.id ?? "new"}-${formEvent?.etag ?? ""}`} categories={categories} event={formEvent ?? undefined} createEvent={createEvent} updateEvent={updateEvent} uploadEventMedia={uploadEventMedia} deleteMedia={deleteMedia} fetchMediaObjectUrl={fetchMediaObjectUrl} onCategoryCreated={(category) => setCategories((items) => [...items, category])} onConflict={(event) => void reviewLatest(event, true)} onCompleted={() => { setFormEvent(undefined); void reloadTimeline(date); }} onCancel={() => { setFormEvent(undefined); void reloadTimeline(date); }} onSaved={() => undefined} />}
   </section>;
 }
