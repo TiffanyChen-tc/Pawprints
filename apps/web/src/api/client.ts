@@ -41,6 +41,7 @@ export interface ApiClientDependencies {
 
 export interface ApiClient {
   request<T>(path: string, options?: ApiOptions): Promise<ApiResponse<T>>;
+  requestBlob(path: string, options?: ApiOptions): Promise<Blob>;
 }
 
 const SESSION_PATHS = new Set([
@@ -94,7 +95,7 @@ export function createApiClient(dependencies: ApiClientDependencies): ApiClient 
     return refreshInFlight;
   }
 
-  async function request<T>(path: string, options: ApiOptions = {}): Promise<ApiResponse<T>> {
+  async function authenticatedResponse(path: string, options: ApiOptions = {}): Promise<Response> {
     if (!path.startsWith("/api/v1/")) {
       throw new Error("API requests must use a relative /api/v1/ path.");
     }
@@ -118,9 +119,7 @@ export function createApiClient(dependencies: ApiClientDependencies): ApiClient 
     }
 
     let { response, accessToken: requestAccessToken } = await send();
-    if (response.status !== 401 || authMode === "session") {
-      return apiResponse<T>(response);
-    }
+    if (response.status !== 401 || authMode === "session") return response;
 
     if (dependencies.getAccessToken() === requestAccessToken) {
       try {
@@ -133,10 +132,20 @@ export function createApiClient(dependencies: ApiClientDependencies): ApiClient 
 
     ({ response } = await send());
     if (response.status === 401) dependencies.onAuthFailure();
-    return apiResponse<T>(response);
+    return response;
   }
 
-  return { request };
+  async function request<T>(path: string, options?: ApiOptions): Promise<ApiResponse<T>> {
+    return apiResponse<T>(await authenticatedResponse(path, options));
+  }
+
+  async function requestBlob(path: string, options?: ApiOptions): Promise<Blob> {
+    const response = await authenticatedResponse(path, options);
+    if (!response.ok) throw await apiErrorFrom(response);
+    return response.blob();
+  }
+
+  return { request, requestBlob };
 }
 
 let configuredClient: ApiClient = createApiClient({
@@ -160,4 +169,8 @@ export function configureApiClient(client: ApiClient) {
 
 export function apiRequest<T>(path: string, options?: ApiOptions) {
   return configuredClient.request<T>(path, options);
+}
+
+export function apiBlobRequest(path: string, options?: ApiOptions) {
+  return configuredClient.requestBlob(path, options);
 }

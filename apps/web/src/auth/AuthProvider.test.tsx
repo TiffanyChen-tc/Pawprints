@@ -203,7 +203,13 @@ describe("auth shell", () => {
     const pendingRefresh = new Promise<Response>((resolve) => {
       finishRefresh = resolve;
     });
-    const fetchMock = vi.fn().mockReturnValue(pendingRefresh);
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path === "/api/v1/auth/refresh") return pendingRefresh;
+      if (path.startsWith("/api/v1/events/timeline")) return Promise.resolve(response(200, { items: [] }));
+      if (path === "/api/v1/categories") return Promise.resolve(response(200, []));
+      return Promise.resolve(response(404));
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     renderApp();
@@ -215,11 +221,14 @@ describe("auth shell", () => {
     await act(async () => finishRefresh?.(response(200, session)));
 
     expect(await screen.findByRole("heading", { name: "Your Pawprints" })).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledWith(
+    const refreshCalls = fetchMock.mock.calls.filter(
+      ([input]) => requestPath(input) === "/api/v1/auth/refresh",
+    );
+    expect(refreshCalls).toHaveLength(1);
+    expect(refreshCalls[0]).toEqual([
       "/api/v1/auth/refresh",
       expect.objectContaining({ method: "POST", credentials: "include" }),
-    );
+    ]);
   });
 
   it("redirects protected navigation to login when startup refresh fails", async () => {
@@ -340,7 +349,9 @@ describe("auth shell", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const path = requestPath(input);
       if (path.endsWith("/refresh") && protectedCalls === 0) return response(200, session);
-      if (path === "/api/v1/categories") {
+      if (path.startsWith("/api/v1/events/timeline")) return response(200, { items: [] });
+      if (path === "/api/v1/categories") return response(200, []);
+      if (path === "/api/v1/events/search?keyword=run") {
         protectedCalls += 1;
         return authError(401, "not_authenticated", "Authentication is required.");
       }
@@ -351,7 +362,9 @@ describe("auth shell", () => {
     await screen.findByRole("heading", { name: "Your Pawprints" });
 
     await act(async () => {
-      await expect(apiRequest("/api/v1/categories")).rejects.toBeInstanceOf(ApiError);
+      await expect(apiRequest("/api/v1/events/search?keyword=run")).rejects.toBeInstanceOf(
+        ApiError,
+      );
     });
 
     await waitFor(() => {

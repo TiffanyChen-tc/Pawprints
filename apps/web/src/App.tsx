@@ -5,6 +5,7 @@ import { useAuth } from "./auth/AuthProvider";
 import LoginPage from "./auth/LoginPage";
 import ProtectedRoute from "./auth/ProtectedRoute";
 import RegisterPage from "./auth/RegisterPage";
+import TimelinePage from "./events/TimelinePage";
 
 function AppShell() {
   const { logout, user } = useAuth();
@@ -23,11 +24,7 @@ function AppShell() {
           </button>
         </div>
       </header>
-      <section className="placeholder-view">
-        <p className="eyebrow">Private journal</p>
-        <h1>Your Pawprints</h1>
-        <p>Your daily timeline will appear here.</p>
-      </section>
+      <TimelinePage />
     </main>
   );
 }
@@ -38,7 +35,8 @@ export default function App() {
       <Route path="/login" element={<LoginPage />} />
       <Route path="/register" element={<RegisterPage />} />
       <Route element={<ProtectedRoute />}>
-        <Route path="/" element={<AppShell />} />
+        <Route path="/" element={<Navigate to="/timeline" replace />} />
+        <Route path="/timeline" element={<AppShell />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
