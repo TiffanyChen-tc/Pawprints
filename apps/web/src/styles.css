@@ -65,6 +65,40 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
 .placeholder-view h1 { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: 2.5rem; font-weight: 500; }
 .placeholder-view > p:last-child { color: var(--muted); }
 
+.timeline { width: min(100% - 36px, 900px); margin: 0 auto; padding: 32px 0 56px; }
+.timeline-heading { margin-bottom: 20px; }
+.timeline-heading h1 { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: 2rem; font-weight: 500; }
+.timeline-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 24px; }
+.timeline-toolbar input { height: 44px; border: 1px solid var(--border); border-radius: 6px; padding: 0 10px; color: var(--ink); background: var(--paper); }
+.secondary-button { color: var(--ink); background: var(--surface); }
+.secondary-button:hover:not(:disabled) { background: #d7e1d8; }
+.text-button { min-height: auto; padding: 0; color: var(--focus); background: transparent; text-decoration: underline; }
+.text-button:hover:not(:disabled) { color: var(--focus); background: transparent; }
+.timeline-entries { display: grid; gap: 10px; }
+.event-entry { border-left: 3px solid var(--focus); background: #fbfcf8; }
+.entry-summary { display: grid; width: 100%; grid-template-columns: 86px minmax(0, 1fr) auto 24px; align-items: center; gap: 12px; padding: 14px 16px; border-radius: 0; color: var(--ink); background: transparent; text-align: left; }
+.entry-summary:hover { color: var(--ink); background: var(--surface); }
+.entry-summary > span { color: var(--muted); font-size: 0.86rem; }
+.entry-detail { padding: 0 16px 16px 101px; }
+.entry-detail > p { margin: 10px 0; color: var(--muted); }
+.entry-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.entry-actions button { display: inline-flex; align-items: center; gap: 7px; padding: 0 12px; }
+.danger { background: var(--danger); }
+.event-form { display: grid; gap: 12px; margin: 0 0 24px; border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; background: var(--paper); }
+.event-form h2 { margin: 0 0 4px; font-family: Georgia, "Times New Roman", serif; font-size: 1.5rem; font-weight: 500; }
+.event-form label { display: grid; gap: 6px; color: var(--ink); font-size: 0.9rem; font-weight: 750; }
+.event-form input, .event-form select, .event-form textarea { width: 100%; min-height: 44px; border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; color: var(--ink); background: #fff; }
+.event-form textarea { min-height: 150px; resize: vertical; }
+.quick-category, .coordinate-fields { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; }
+.coordinate-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.quick-category button { display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; }
+.markdown-toolbar { display: flex; gap: 6px; }
+.markdown-toolbar .icon-button { width: 36px; min-width: 36px; min-height: 36px; background: var(--ink); }
+.media-carousel { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(180px, 260px); gap: 10px; overflow-x: auto; margin-top: 14px; padding-bottom: 4px; }
+.media-carousel img { width: 100%; aspect-ratio: 4 / 3; border: 1px solid var(--border); border-radius: 6px; object-fit: cover; }
+.media-error { color: var(--danger) !important; }
+.empty-state { padding: 28px 0; color: var(--muted); text-align: center; }
+
 @media (max-width: 720px) {
   .auth-layout { grid-template-columns: 1fr; }
   .auth-intro { min-height: 260px; padding: 28px 24px; }
@@ -72,6 +106,12 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
   .auth-copy { margin-top: 12px; }
   .auth-form-panel { padding: 34px 24px 48px; }
   .account-controls > span { max-width: 135px; }
+  .timeline { width: min(100% - 28px, 900px); padding-top: 24px; }
+  .entry-summary { grid-template-columns: 70px minmax(0, 1fr) 24px; gap: 8px; }
+  .entry-summary > span:nth-of-type(2) { display: none; }
+  .entry-detail { padding-left: 16px; }
+  .quick-category, .coordinate-fields { grid-template-columns: 1fr; }
+  .timeline-toolbar > button:last-child { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
