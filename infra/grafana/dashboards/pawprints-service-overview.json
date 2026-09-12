@@ -24,7 +24,7 @@
       "id": 1,
       "targets": [
         {
-          "expr": "sum by (service) (rate(pawprints_http_requests_total[5m]))",
+          "expr": "sum by (service) (rate(pawprints_http_requests_total{route!~\"^/(healthz|readyz|metrics)$\"}[5m]))",
           "legendFormat": "{{service}}"
         }
       ],
@@ -38,6 +38,8 @@
       },
       "fieldConfig": {
         "defaults": {
+          "max": 1,
+          "min": 0,
           "unit": "percentunit"
         },
         "overrides": []
@@ -51,7 +53,7 @@
       "id": 2,
       "targets": [
         {
-          "expr": "sum by (service) (rate(pawprints_http_requests_total{status_code=~\"5..\"}[5m])) / sum by (service) (rate(pawprints_http_requests_total[5m]))",
+          "expr": "(sum by (service) (rate(pawprints_http_requests_total{status_code=~\"5..\", route!~\"^/(healthz|readyz|metrics)$\"}[5m])) / sum by (service) (rate(pawprints_http_requests_total{route!~\"^/(healthz|readyz|metrics)$\"}[5m]))) or on(service) (0 * sum by (service) (rate(pawprints_http_requests_total{route!~\"^/(healthz|readyz|metrics)$\"}[5m])))",
           "legendFormat": "{{service}}"
         }
       ],
@@ -78,11 +80,173 @@
       "id": 3,
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (service, le) (rate(pawprints_http_request_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (service, le) (rate(pawprints_http_request_duration_seconds_bucket{route!~\"^/(healthz|readyz|metrics)$\"}[5m])))",
           "legendFormat": "{{service}}"
         }
       ],
       "title": "P95 Latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "red",
+                  "text": "DOWN"
+                },
+                "1": {
+                  "color": "green",
+                  "text": "UP"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 8
+      },
+      "id": 4,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "expr": "label_replace(up{job=\"pawprints-services\"}, \"service\", \"$1\", \"instance\", \"([^:]+):.*\")",
+          "legendFormat": "{{service}}"
+        }
+      ],
+      "title": "Service Status",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "max": 1,
+          "min": 0,
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 8
+      },
+      "id": 5,
+      "targets": [
+        {
+          "expr": "(sum by (service) (rate(pawprints_http_requests_total{status_code=~\"4..\", route!~\"^/(healthz|readyz|metrics)$\"}[5m])) / sum by (service) (rate(pawprints_http_requests_total{route!~\"^/(healthz|readyz|metrics)$\"}[5m]))) or on(service) (0 * sum by (service) (rate(pawprints_http_requests_total{route!~\"^/(healthz|readyz|metrics)$\"}[5m])))",
+          "legendFormat": "{{service}}"
+        }
+      ],
+      "title": "4xx Ratio",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 8
+      },
+      "id": 6,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (service, le) (rate(pawprints_http_request_duration_seconds_bucket{route!~\"^/(healthz|readyz|metrics)$\"}[5m])))",
+          "legendFormat": "p50 {{service}}"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (service, le) (rate(pawprints_http_request_duration_seconds_bucket{route!~\"^/(healthz|readyz|metrics)$\"}[5m])))",
+          "legendFormat": "p95 {{service}}"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (service, le) (rate(pawprints_http_request_duration_seconds_bucket{route!~\"^/(healthz|readyz|metrics)$\"}[5m])))",
+          "legendFormat": "p99 {{service}}"
+        }
+      ],
+      "title": "Latency Percentiles",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      },
+      "id": 7,
+      "targets": [
+        {
+          "expr": "sum by (service, route) (rate(pawprints_http_requests_total{route!~\"^/(healthz|readyz|metrics)$\"}[5m]))",
+          "legendFormat": "{{service}} {{route}}"
+        }
+      ],
+      "title": "Requests by Route",
       "type": "timeseries"
     }
   ],
@@ -100,5 +264,5 @@
   "timezone": "browser",
   "title": "Pawprints Service Overview",
   "uid": "pawprints-service-overview",
-  "version": 1
+  "version": 2
 }

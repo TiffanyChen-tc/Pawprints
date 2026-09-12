@@ -133,3 +133,136 @@ def test_prometheus_and_grafana_provisioning_targets_are_declared():
     assert '"title": "Pawprints Service Overview"' in dashboard
     assert "prometheus:" in compose
     assert "grafana:" in compose
+
+
+def test_grafana_service_overview_dashboard_covers_red_status_and_route_panels():
+    dashboard_path = Path("infra/grafana/dashboards/pawprints-service-overview.json")
+    dashboard = json.loads(dashboard_path.read_text(encoding="utf-8"))
+    application_route_filter = 'route!~"^/(healthz|readyz|metrics)$"'
+
+    panels = {panel["title"]: panel for panel in dashboard["panels"]}
+    assert set(panels) == {
+        "Request Rate",
+        "5xx Ratio",
+        "P95 Latency",
+        "Service Status",
+        "4xx Ratio",
+        "Latency Percentiles",
+        "Requests by Route",
+    }
+
+    assert panels["Request Rate"]["gridPos"] == {"h": 8, "w": 8, "x": 0, "y": 0}
+    assert panels["5xx Ratio"]["gridPos"] == {"h": 8, "w": 8, "x": 8, "y": 0}
+    assert panels["P95 Latency"]["gridPos"] == {"h": 8, "w": 8, "x": 16, "y": 0}
+    assert panels["Service Status"]["gridPos"] == {"h": 8, "w": 8, "x": 0, "y": 8}
+    assert panels["4xx Ratio"]["gridPos"] == {"h": 8, "w": 8, "x": 8, "y": 8}
+    assert panels["Latency Percentiles"]["gridPos"] == {"h": 8, "w": 8, "x": 16, "y": 8}
+    assert panels["Requests by Route"]["gridPos"] == {"h": 8, "w": 24, "x": 0, "y": 16}
+
+    for panel in panels.values():
+        assert panel["datasource"] == {"type": "prometheus", "uid": "prometheus"}
+
+    request_rate = panels["Request Rate"]["targets"][0]["expr"]
+    assert request_rate == (
+        'sum by (service) '
+        '(rate(pawprints_http_requests_total{route!~"^/(healthz|readyz|metrics)$"}[5m]))'
+    )
+    assert panels["Request Rate"]["fieldConfig"]["defaults"]["unit"] == "reqps"
+
+    expected_ratio_exprs = {
+        "5xx Ratio": (
+            '(sum by (service) (rate(pawprints_http_requests_total{status_code=~"5..", '
+            'route!~"^/(healthz|readyz|metrics)$"}[5m])) / sum by (service) '
+            '(rate(pawprints_http_requests_total{route!~"^/(healthz|readyz|metrics)$"}[5m]))) '
+            'or on(service) (0 * sum by (service) '
+            '(rate(pawprints_http_requests_total{route!~"^/(healthz|readyz|metrics)$"}[5m])))'
+        ),
+        "4xx Ratio": (
+            '(sum by (service) (rate(pawprints_http_requests_total{status_code=~"4..", '
+            'route!~"^/(healthz|readyz|metrics)$"}[5m])) / sum by (service) '
+            '(rate(pawprints_http_requests_total{route!~"^/(healthz|readyz|metrics)$"}[5m]))) '
+            'or on(service) (0 * sum by (service) '
+            '(rate(pawprints_http_requests_total{route!~"^/(healthz|readyz|metrics)$"}[5m])))'
+        ),
+    }
+    for title in ("5xx Ratio", "4xx Ratio"):
+        expr = panels[title]["targets"][0]["expr"]
+        assert expr == expected_ratio_exprs[title]
+        assert expr.count(application_route_filter) == 3
+        assert "/internal" not in expr
+        assert "vector(0)" not in expr
+        assert panels[title]["fieldConfig"]["defaults"]["unit"] == "percentunit"
+        assert panels[title]["fieldConfig"]["defaults"]["min"] == 0
+        assert panels[title]["fieldConfig"]["defaults"]["max"] == 1
+
+    assert panels["P95 Latency"]["targets"][0]["expr"] == (
+        "histogram_quantile(0.95, "
+        'sum by (service, le) '
+        '(rate(pawprints_http_request_duration_seconds_bucket{route!~"^/(healthz|readyz|metrics)$"}[5m])))'
+    )
+    assert panels["P95 Latency"]["fieldConfig"]["defaults"]["unit"] == "s"
+
+    status_panel = panels["Service Status"]
+    assert status_panel["type"] == "stat"
+    assert status_panel["targets"][0]["expr"] == (
+        'label_replace(up{job="pawprints-services"}, "service", "$1", "instance", "([^:]+):.*")'
+    )
+    assert status_panel["fieldConfig"]["defaults"]["mappings"] == [
+        {
+            "options": {
+                "0": {"color": "red", "text": "DOWN"},
+                "1": {"color": "green", "text": "UP"},
+            },
+            "type": "value",
+        }
+    ]
+
+    percentile_targets = panels["Latency Percentiles"]["targets"]
+    assert [target["legendFormat"] for target in percentile_targets] == [
+        "p50 {{service}}",
+        "p95 {{service}}",
+        "p99 {{service}}",
+    ]
+    assert [target["expr"] for target in percentile_targets] == [
+        'histogram_quantile(0.50, sum by (service, le) (rate(pawprints_http_request_duration_seconds_bucket{route!~"^/(healthz|readyz|metrics)$"}[5m])))',
+        'histogram_quantile(0.95, sum by (service, le) (rate(pawprints_http_request_duration_seconds_bucket{route!~"^/(healthz|readyz|metrics)$"}[5m])))',
+        'histogram_quantile(0.99, sum by (service, le) (rate(pawprints_http_request_duration_seconds_bucket{route!~"^/(healthz|readyz|metrics)$"}[5m])))',
+    ]
+    assert panels["Latency Percentiles"]["fieldConfig"]["defaults"]["unit"] == "s"
+
+    route_expr = panels["Requests by Route"]["targets"][0]["expr"]
+    assert route_expr == (
+        'sum by (service, route) '
+        '(rate(pawprints_http_requests_total{route!~"^/(healthz|readyz|metrics)$"}[5m]))'
+    )
+    assert panels["Requests by Route"]["targets"][0]["legendFormat"] == "{{service}} {{route}}"
+    assert panels["Requests by Route"]["fieldConfig"]["defaults"]["unit"] == "reqps"
+
+
+def test_grafana_dashboard_queries_use_only_privacy_safe_bounded_labels():
+    dashboard = json.loads(
+        Path("infra/grafana/dashboards/pawprints-service-overview.json").read_text(encoding="utf-8")
+    )
+    expressions = "\n".join(
+        target["expr"]
+        for panel in dashboard["panels"]
+        for target in panel.get("targets", [])
+    )
+
+    assert "pawprints_http_requests_total" in expressions
+    assert "pawprints_http_request_duration_seconds_bucket" in expressions
+    assert "up{job=\"pawprints-services\"}" in expressions
+    for unsafe_label in [
+        "user_id",
+        "email",
+        "event_id",
+        "media_id",
+        "request_id",
+        "raw_url",
+        "query_string",
+        "description",
+        "token",
+        "authorization",
+        "cookie",
+    ]:
+        assert unsafe_label not in expressions.lower()
