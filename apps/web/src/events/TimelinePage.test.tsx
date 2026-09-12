@@ -10,6 +10,101 @@ const entries = [
 ];
 
 describe("TimelinePage", () => {
+  it("removes an expanded image immediately after edit save returns to the timeline", async () => {
+    const imageA = { id: "image-a", display_order: 1, mime_type: "image/jpeg", file_size: 10, created_at: "2026-09-09T00:00:00Z" };
+    let media = [imageA];
+    const user = userEvent.setup();
+    render(<TimelinePage {...({ initialDate: "2026-09-09", loadTimeline: vi.fn().mockResolvedValue([entries[1]]), loadCategories: vi.fn().mockResolvedValue([{ id: "cat", name: "Running", version: 1 }]), loadMedia: vi.fn().mockImplementation(() => Promise.resolve(media)), fetchMediaObjectUrl: vi.fn().mockImplementation((id: string) => Promise.resolve(`blob:${id}`)), deleteMedia: vi.fn().mockImplementation(() => { media = []; return Promise.resolve(); }), updateEvent: vi.fn().mockResolvedValue(entries[1]) } as any)} />);
+    await screen.findByText("Morning run");
+    await user.click(screen.getByRole("button", { name: /Morning run/ }));
+    expect(await screen.findByRole("img", { name: "Pawprint image 1" })).toHaveAttribute("src", "blob:image-a");
+    await user.click(screen.getByRole("button", { name: "Edit Morning run" }));
+    await user.click(screen.getByRole("button", { name: "Remove saved image 1" }));
+    await user.click(screen.getByRole("button", { name: "Save Pawprint" }));
+    await screen.findByText("Morning run");
+    await user.click(screen.getByRole("button", { name: /Morning run/ }));
+    expect(screen.queryByRole("img", { name: "Pawprint image 1" })).not.toBeInTheDocument();
+  });
+
+  it("shows a newly uploaded image immediately after edit save returns to the timeline", async () => {
+    const imageB = { id: "image-b", display_order: 1, mime_type: "image/jpeg", file_size: 10, created_at: "2026-09-09T00:00:00Z" };
+    let media: typeof imageB[] = [];
+    const user = userEvent.setup();
+    render(<TimelinePage {...({ initialDate: "2026-09-09", loadTimeline: vi.fn().mockResolvedValue([entries[1]]), loadCategories: vi.fn().mockResolvedValue([{ id: "cat", name: "Running", version: 1 }]), loadMedia: vi.fn().mockImplementation(() => Promise.resolve(media)), fetchMediaObjectUrl: vi.fn().mockImplementation((id: string) => Promise.resolve(`blob:${id}`)), uploadEventMedia: vi.fn().mockImplementation(() => { media = [imageB]; return Promise.resolve(media); }), updateEvent: vi.fn().mockResolvedValue(entries[1]) } as any)} />);
+    await screen.findByText("Morning run");
+    await user.click(screen.getByRole("button", { name: /Morning run/ }));
+    await user.click(screen.getByRole("button", { name: "Edit Morning run" }));
+    await user.upload(screen.getByLabelText("Images"), new File(["image"], "B.jpg", { type: "image/jpeg" }));
+    await user.click(screen.getByRole("button", { name: "Save Pawprint" }));
+    await screen.findByText("Morning run");
+    await user.click(screen.getByRole("button", { name: /Morning run/ }));
+    expect(await screen.findByRole("img", { name: "Pawprint image 1" })).toHaveAttribute("src", "blob:image-b");
+  });
+
+  it("cancels a create without mutating data and returns to the selected date", async () => {
+    const createEvent = vi.fn();
+    const uploadEventMedia = vi.fn();
+    const revokeObjectUrl = vi.spyOn(URL, "revokeObjectURL");
+    const user = userEvent.setup();
+    render(<TimelinePage initialDate="2026-09-09" loadTimeline={vi.fn().mockResolvedValue([])} loadCategories={vi.fn().mockResolvedValue([{ id: "cat", name: "Running", version: 1 }])} createEvent={createEvent} uploadEventMedia={uploadEventMedia} />);
+
+    await screen.findByText("No Pawprints for this date yet.");
+    await user.click(screen.getByRole("button", { name: "New Pawprint" }));
+    await user.type(screen.getByLabelText("Title"), "Unsaved walk");
+    await user.selectOptions(screen.getByLabelText("Category"), "cat");
+    await user.upload(screen.getByLabelText("Images"), new File(["image"], "cancel.jpg", { type: "image/jpeg" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(await screen.findByText("No Pawprints for this date yet.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Timeline date")).toHaveValue("2026-09-09");
+    expect(createEvent).not.toHaveBeenCalled();
+    expect(uploadEventMedia).not.toHaveBeenCalled();
+    expect(revokeObjectUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides the selected timeline while create and edit forms are open", async () => {
+    const user = userEvent.setup();
+    render(<TimelinePage initialDate="2026-09-09" loadTimeline={vi.fn().mockResolvedValue([entries[1]])} loadCategories={vi.fn().mockResolvedValue([{ id: "cat", name: "Running", version: 1 }])} loadMedia={vi.fn().mockResolvedValue([])} />);
+
+    await screen.findByText("Morning run");
+    await user.click(screen.getByRole("button", { name: "New Pawprint" }));
+    expect(screen.getByRole("heading", { name: "New Pawprint" })).toBeInTheDocument();
+    expect(screen.queryByText("Morning run")).not.toBeInTheDocument();
+
+  });
+
+  it("hides the timeline for edit and restores the selected date and current row on cancel", async () => {
+    const user = userEvent.setup();
+    render(<TimelinePage initialDate="2026-09-09" loadTimeline={vi.fn().mockResolvedValue([entries[1]])} loadCategories={vi.fn().mockResolvedValue([{ id: "cat", name: "Running", version: 1 }])} loadMedia={vi.fn().mockResolvedValue([])} />);
+
+    await screen.findByText("Morning run");
+    await user.click(screen.getByRole("button", { name: /Morning run/ }));
+    await user.click(screen.getByRole("button", { name: "Edit Morning run" }));
+    expect(screen.getByRole("heading", { name: "Edit Pawprint" })).toBeInTheDocument();
+    expect(screen.queryByRole("article")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(await screen.findByText("Morning run")).toBeInTheDocument();
+    expect(screen.getByLabelText("Timeline date")).toHaveValue("2026-09-09");
+  });
+
+  it("shows the refetched title after a successful edit returns to the timeline", async () => {
+    const updated = { ...entries[1], title: "Fresh title", description: "Fresh description", etag: "\"2\"", version: 2 };
+    const loadTimeline = vi.fn().mockResolvedValueOnce([entries[1]]).mockResolvedValueOnce([updated]);
+    const user = userEvent.setup();
+    render(<TimelinePage initialDate="2026-09-09" loadTimeline={loadTimeline} loadCategories={vi.fn().mockResolvedValue([{ id: "cat", name: "Running", version: 1 }])} loadMedia={vi.fn().mockResolvedValue([])} updateEvent={vi.fn().mockResolvedValue(updated)} />);
+
+    await screen.findByText("Morning run");
+    await user.click(screen.getByRole("button", { name: /Morning run/ }));
+    await user.click(screen.getByRole("button", { name: "Edit Morning run" }));
+    await user.clear(screen.getByLabelText("Title"));
+    await user.type(screen.getByLabelText("Title"), "Fresh title");
+    await user.click(screen.getByRole("button", { name: "Save Pawprint" }));
+
+    expect(await screen.findByText("Fresh title")).toBeInTheDocument();
+    expect(screen.queryByText("Morning run")).not.toBeInTheDocument();
+  });
+
   it("does not let a late timeline response overwrite the currently selected date", async () => {
     let resolveFirst: ((events: typeof entries) => void) | undefined;
     const loadTimeline = vi.fn()

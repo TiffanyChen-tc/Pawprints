@@ -2,7 +2,7 @@
   color: #24322d;
   background: #f5f3ec;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  font-synthesis: none;
+  font-synthesis: style;
   text-rendering: optimizeLegibility;
   --ink: #24322d;
   --muted: #66716d;
@@ -108,6 +108,14 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
 .event-form label { display: grid; gap: 6px; color: var(--ink); font-size: 0.9rem; font-weight: 750; }
 .event-form input, .event-form select, .event-form textarea { width: 100%; min-height: 44px; border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; color: var(--ink); background: #fff; }
 .event-form textarea { min-height: 150px; resize: vertical; }
+.diary-editor { min-height: 150px; border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; background: #fff; white-space: pre-wrap; }
+.diary-editor em, [data-testid="markdown-description"] em { font-style: italic; }
+.diary-editor a, [data-testid="markdown-description"] a { color: var(--focus); font-weight: 700; text-decoration: underline; }
+.link-dialog-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 18px; background: rgba(36, 50, 45, 0.46); }
+.link-dialog { display: grid; width: min(100%, 420px); gap: 12px; border: 1px solid var(--border); border-radius: 8px; padding: 18px; background: var(--paper); box-shadow: 0 18px 60px rgba(36, 50, 45, 0.24); }
+.link-dialog h3 { margin: 0; font-size: 1rem; }
+.dialog-actions { display: flex; justify-content: end; gap: 8px; }
+.form-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .quick-category, .coordinate-fields { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; }
 .coordinate-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .quick-category button { display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; }
