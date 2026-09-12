@@ -60,12 +60,31 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
 .app-header { display: flex; min-height: 64px; align-items: center; justify-content: space-between; gap: 24px; border-bottom: 1px solid var(--border); padding: 0 clamp(18px, 4vw, 56px); }
 .account-controls { display: flex; min-width: 0; align-items: center; gap: 12px; color: var(--muted); font-size: 0.9rem; }
 .account-controls > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-nav { display: flex; gap: 6px; width: min(100% - 36px, 900px); margin: 14px auto 0; }
+.app-nav a { display: inline-flex; min-height: 38px; align-items: center; gap: 6px; border-radius: 6px; padding: 0 10px; color: var(--muted); font-size: 0.9rem; font-weight: 700; text-decoration: none; }
+.app-nav a.active { color: var(--ink); background: var(--surface); }
 .icon-button { display: inline-grid; width: 40px; min-width: 40px; min-height: 40px; place-items: center; padding: 0; background: var(--ink); }
 .placeholder-view { width: min(100% - 36px, 960px); margin: 0 auto; padding: 72px 0; }
 .placeholder-view h1 { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: 2.5rem; font-weight: 500; }
 .placeholder-view > p:last-child { color: var(--muted); }
 
 .timeline { width: min(100% - 36px, 900px); margin: 0 auto; padding: 32px 0 56px; }
+.search-page, .analytics-page { width: min(100% - 36px, 900px); margin: 0 auto; padding: 28px 0 56px; }
+.page-heading { margin-bottom: 20px; }
+.page-heading h1 { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: 2rem; font-weight: 500; }
+.filter-panel, .analytics-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 20px; }
+.filter-panel label, .analytics-controls label { display: grid; gap: 6px; font-size: 0.9rem; font-weight: 750; }
+.filter-panel input, .filter-panel select, .analytics-controls select { width: 100%; min-height: 44px; border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; color: var(--ink); background: #fff; }
+.filter-actions { display: flex; align-items: end; gap: 8px; }
+.filter-actions button { padding: 0 12px; }
+.analytics-range { margin: -8px 0 20px; color: var(--muted); font-size: 0.9rem; }
+.count-rows { display: grid; gap: 10px; }
+.count-row { display: grid; grid-template-columns: minmax(100px, 0.8fr) minmax(100px, 2fr) 32px; align-items: center; gap: 12px; }
+.count-track { height: 10px; overflow: hidden; border-radius: 2px; background: var(--surface); }
+.count-bar { display: block; height: 100%; background: var(--focus); }
+.analytics-buckets { display: grid; gap: 20px; }
+.analytics-bucket { border-left: 3px solid var(--focus); padding: 0 0 0 16px; }
+.analytics-bucket h2 { margin: 0 0 12px; font-size: 1rem; }
 .timeline-heading { margin-bottom: 20px; }
 .timeline-heading h1 { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: 2rem; font-weight: 500; }
 .timeline-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 24px; }
@@ -107,6 +126,10 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
   .auth-form-panel { padding: 34px 24px 48px; }
   .account-controls > span { max-width: 135px; }
   .timeline { width: min(100% - 28px, 900px); padding-top: 24px; }
+  .app-nav, .search-page, .analytics-page { width: min(100% - 28px, 900px); }
+  .app-nav { overflow-x: auto; }
+  .app-nav a { flex: 0 0 auto; }
+  .filter-panel, .analytics-controls { grid-template-columns: 1fr; }
   .entry-summary { grid-template-columns: 70px minmax(0, 1fr) 24px; gap: 8px; }
   .entry-summary > span:nth-of-type(2) { display: none; }
   .entry-detail { padding-left: 16px; }
