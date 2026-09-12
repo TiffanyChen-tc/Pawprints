@@ -33,6 +33,23 @@ def test_activity_counts_exclude_other_users(client, token_a, event_engine):
     ]
 
 
+def test_spoofed_user_header_does_not_change_analytics_identity(client, token_a, event_engine):
+    category_a = uuid4()
+    category_b = uuid4()
+    insert_fact(event_engine, user_id=USER_A, category_id=category_a, category_name="Running", local_date=date(2026, 9, 2))
+    insert_fact(event_engine, user_id=USER_B, category_id=category_b, category_name="Private", local_date=date(2026, 9, 2))
+
+    response = client.get(
+        "/api/v1/analytics/activity-counts?start_date=2026-09-01&end_date=2026-09-30",
+        headers={**bearer(token_a), "X-User-Id": str(USER_B)},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["items"] == [
+        {"category_id": str(category_a), "category_name": "Running", "count": 1}
+    ]
+
+
 def test_category_and_inclusive_date_range_filters(client, token_a, event_engine):
     running = uuid4()
     reading = uuid4()

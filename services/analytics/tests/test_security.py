@@ -84,6 +84,16 @@ def test_internal_invalidation_rejects_unauthorized_callers(client):
     assert response.json()["error"]["code"] == "not_authenticated"
 
 
+def test_internal_invalidation_rejects_missing_and_wrong_token(client):
+    missing = client.post(f"/internal/analytics/users/{USER_A}/invalidate")
+    wrong_token = client.post(
+        f"/internal/analytics/users/{USER_A}/invalidate",
+        headers={"X-Pawprints-Internal-Service": "event", "X-Pawprints-Internal-Token": "wrong"},
+    )
+
+    assert [missing.status_code, wrong_token.status_code] == [401, 401]
+
+
 def test_internal_invalidation_does_not_change_other_user_version(client, redis_client):
     from app.cache import get_user_cache_version
 

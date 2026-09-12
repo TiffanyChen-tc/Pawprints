@@ -15,9 +15,11 @@ def internal_headers(token: str, caller: str = "media", internal_token: str = "m
 def test_internal_ownership_requires_media_internal_credentials(client, token_a, event_a):
     missing = client.get(f"/internal/events/{event_a['id']}/ownership", headers=bearer(token_a))
     wrong = client.get(f"/internal/events/{event_a['id']}/ownership", headers=internal_headers(token_a, internal_token="wrong"))
+    wrong_caller = client.get(f"/internal/events/{event_a['id']}/ownership", headers=internal_headers(token_a, caller="event"))
 
     assert missing.status_code == 401
     assert wrong.status_code == 401
+    assert wrong_caller.status_code == 401
 
 
 def test_internal_ownership_returns_success_for_owned_event(client, token_a, event_a):

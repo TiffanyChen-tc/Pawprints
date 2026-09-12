@@ -149,6 +149,7 @@ def main() -> None:
 
     _, _, home = client.request("GET", "/", expected=200)
     assert "Pawprints" in home, "React shell did not render Pawprints"
+    client.request("GET", "/metrics", expected=404)
 
     _, _, session = client.json_request(
         "POST",
