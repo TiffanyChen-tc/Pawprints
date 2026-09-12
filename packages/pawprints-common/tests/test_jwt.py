@@ -1,4 +1,6 @@
+import base64
 from datetime import datetime, timedelta, timezone
+import json
 from uuid import uuid4
 
 import jwt
@@ -55,12 +57,36 @@ def test_verify_access_token_rejects_wrong_audience(rsa_key_pair):
         verify_access_token(token, public_key_pem, "pawprints-auth", "pawprints-api")
 
 
+def test_verify_access_token_rejects_wrong_issuer(rsa_key_pair):
+    private_key_pem, public_key_pem = rsa_key_pair
+    token = make_token(private_key_pem, iss="other-issuer")
+
+    with pytest.raises(JWTValidationError):
+        verify_access_token(token, public_key_pem, "pawprints-auth", "pawprints-api")
+
+
 def test_verify_access_token_rejects_expired_token(rsa_key_pair):
     private_key_pem, public_key_pem = rsa_key_pair
     token = make_token(private_key_pem, exp=datetime.now(timezone.utc) - timedelta(seconds=1))
 
     with pytest.raises(JWTValidationError):
         verify_access_token(token, public_key_pem, "pawprints-auth", "pawprints-api")
+
+
+def test_verify_access_token_rejects_tampered_payload(rsa_key_pair):
+    private_key_pem, public_key_pem = rsa_key_pair
+    token = make_token(private_key_pem)
+    header, payload, signature = token.split(".")
+    payload_bytes = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
+    tampered_claims = json.loads(payload_bytes)
+    tampered_claims["sub"] = str(uuid4())
+    tampered_payload = base64.urlsafe_b64encode(
+        json.dumps(tampered_claims, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    tampered = ".".join([header, tampered_payload, signature])
+
+    with pytest.raises(JWTValidationError):
+        verify_access_token(tampered, public_key_pem, "pawprints-auth", "pawprints-api")
 
 
 def test_verify_access_token_rejects_non_uuid_subject(rsa_key_pair):

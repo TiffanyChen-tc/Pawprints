@@ -71,6 +71,6 @@ def test_frontend_dependencies_are_installed_only_when_frontend_tests_exist():
     assert re.search(
         r'Invoke-Checked -FilePath docker -Arguments @\(\s*'
         r'"run", "--rm", "--mount", \$repoMount, "-w", "/repo/apps/web",\s*'
-        r'"node:22-alpine", "npm", "test", "--", "--run"\s*\)',
+        r'"node:22-alpine", "npm", "test", "--", "--run", "--maxWorkers=2"\s*\)',
         script,
     )

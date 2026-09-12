@@ -229,7 +229,7 @@ function Invoke-TestSuite {
       )
       Invoke-Checked -FilePath docker -Arguments @(
         "run", "--rm", "--mount", $repoMount, "-w", "/repo/apps/web",
-        "node:22-alpine", "npm", "test", "--", "--run"
+        "node:22-alpine", "npm", "test", "--", "--run", "--maxWorkers=2"
       )
     }
   } catch {
