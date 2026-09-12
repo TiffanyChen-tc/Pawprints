@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from pawprints_common.errors import error_response
 from pawprints_common.jwt import JWTValidationError, verify_access_token
+from pawprints_common.request_context import request_id_for
 
 from app.cache import cache_key, get_cached_result, get_redis, get_user_cache_version, set_cached_result
 from app.config import Settings, get_settings
@@ -68,7 +69,7 @@ activity_counts_response_adapter = TypeAdapter(ActivityCountsResponse)
 
 
 def api_error(request: Request, code: str, message: str, status_code: int):
-    return error_response(code, message, status_code, request.headers.get("X-Request-Id", ""))
+    return error_response(code, message, status_code, request_id_for(request))
 
 
 def authenticated_user_id(authorization: str | None, settings: Settings) -> UUID | None:
@@ -185,10 +186,10 @@ def activity_counts(
             except ValidationError:
                 logger.warning(
                     "analytics cache payload invalid",
-                    extra={"request_id": request.headers.get("X-Request-Id", "")},
+                    extra={"request_id": request_id_for(request)},
                 )
     except (RedisError, ValueError):
-        logger.warning("analytics cache read unavailable", extra={"request_id": request.headers.get("X-Request-Id", "")})
+        logger.warning("analytics cache read unavailable", extra={"request_id": request_id_for(request)})
         key = None
 
     result = query_activity_counts(db, user_id, query)
@@ -196,5 +197,5 @@ def activity_counts(
         try:
             set_cached_result(redis_client, key, result, settings.analytics_cache_ttl_seconds)
         except RedisError:
-            logger.warning("analytics cache write unavailable", extra={"request_id": request.headers.get("X-Request-Id", "")})
+            logger.warning("analytics cache write unavailable", extra={"request_id": request_id_for(request)})
     return result

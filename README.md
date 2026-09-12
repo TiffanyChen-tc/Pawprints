@@ -28,6 +28,15 @@ The public browser and API boundary is Nginx at:
 http://localhost:8080
 ```
 
+Local observability UIs are exposed at:
+
+```text
+Prometheus: http://localhost:9090
+Grafana: http://localhost:3000
+```
+
+Auth, Event, Media, and Analytics service ports remain private on the Compose network. Their `/metrics` endpoints are scraped internally by Prometheus and are not exposed directly to the host.
+
 Run migrations when service migration jobs exist:
 
 ```pwsh
