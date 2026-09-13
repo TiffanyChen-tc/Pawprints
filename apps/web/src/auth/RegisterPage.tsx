@@ -67,12 +67,12 @@ export default function RegisterPage() {
             name="password"
             type="password"
             autoComplete="new-password"
-            minLength={12}
+            minLength={6}
             maxLength={128}
             aria-describedby="password-hint"
             required
           />
-          <p className="field-hint" id="password-hint">Use 12 to 128 characters.</p>
+          <p className="field-hint" id="password-hint">Use 6 to 128 characters.</p>
           {error && <p className="form-error" role="alert">{error}</p>}
           <button type="submit" disabled={isSubmitting}>
             {isSubmitting ? "Creating account..." : "Create account"}

@@ -117,7 +117,8 @@ function Start-PresentServices {
   }
   $present = @($Names | Where-Object { $services -contains $_ })
   if ($present.Count -gt 0) {
-    Invoke-Checked docker compose up --build -d --wait @present
+    $arguments = @("compose", "up", "--build", "-d", "--wait") + $present
+    Invoke-Checked -FilePath docker -Arguments $arguments
   }
 }
 
@@ -132,7 +133,7 @@ function Invoke-ComposeJobIfPresent {
     throw "Native command failed with exit code ${LASTEXITCODE}: docker compose --profile jobs config --services"
   }
   if ($services -contains $ServiceName) {
-    Invoke-Checked docker compose --profile jobs run --build --rm $ServiceName
+    Invoke-Checked -FilePath docker -Arguments @("compose", "--profile", "jobs", "run", "--build", "--rm", $ServiceName)
   }
 }
 
@@ -156,7 +157,7 @@ function Assert-NoPublicServicePorts {
 function Invoke-TestSuite {
   $exitCode = 0
   try {
-    Invoke-Checked docker compose --profile test up --build -d --wait postgres-test redis-test
+    Invoke-Checked -FilePath docker -Arguments @("compose", "--profile", "test", "up", "--build", "-d", "--wait", "postgres-test", "redis-test")
 
     $env:AUTH_DATABASE_URL = "postgresql+psycopg://pawprints_auth_rw:test_auth@postgres-test:5432/pawprints_test"
     $env:EVENT_DATABASE_URL = "postgresql+psycopg://pawprints_event_rw:test_event@postgres-test:5432/pawprints_test"
@@ -253,16 +254,16 @@ function Invoke-Migrate {
 function Invoke-Smoke {
   Wait-ForReady
   Assert-NoPublicServicePorts
-  Invoke-Checked docker compose --profile jobs run --build --rm smoke
+  Invoke-Checked -FilePath docker -Arguments @("compose", "--profile", "jobs", "run", "--build", "--rm", "smoke")
 }
 
 function Invoke-Seed {
-  Invoke-Checked docker compose --profile jobs run --build --rm seed
+  Invoke-Checked -FilePath docker -Arguments @("compose", "--profile", "jobs", "run", "--build", "--rm", "seed")
 }
 
 function Invoke-Start {
   Ensure-LocalConfig
-  Invoke-Checked docker compose up --build -d --wait postgres redis
+  Invoke-Checked -FilePath docker -Arguments @("compose", "up", "--build", "-d", "--wait", "postgres", "redis")
   Invoke-Migrate
   Invoke-Smoke
 }
@@ -275,11 +276,11 @@ function Invoke-Demo {
 switch ($Command) {
   "setup" { Ensure-LocalConfig }
   "migrate" { Invoke-Migrate }
-  "up" { Invoke-Checked docker compose up --build -d --wait }
+  "up" { Invoke-Checked -FilePath docker -Arguments @("compose", "up", "--build", "-d", "--wait") }
   "test" { Invoke-TestSuite }
   "smoke" { Invoke-Smoke }
   "seed" { Invoke-Seed }
-  "down" { Invoke-Checked docker compose down }
+  "down" { Invoke-Checked -FilePath docker -Arguments @("compose", "down") }
   "start" { Invoke-Start }
   "demo" { Invoke-Demo }
   "reset-data" {
