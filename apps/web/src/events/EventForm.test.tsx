@@ -1,14 +1,18 @@
 import { createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
+import "../styles.css";
 import EventForm from "./EventForm";
 import MarkdownDescription from "./MarkdownDescription";
 
 const category = { id: "cat-1", name: "Running", version: 1 };
 const event = { id: "event-1", etag: "\"1\"", title: "Morning run", category_id: "cat-1", category_name: "Running", description: null, mood: "good", location_name: null, latitude: null, longitude: null, occurred_at: "2026-09-09T00:00:00Z", timezone: "Asia/Taipei", local_date: "2026-09-09", version: 1 };
 const image = (name: string) => new File(["image"], name, { type: "image/jpeg" });
+const stylesSource = readFileSync(join(process.cwd(), "src", "styles.css"), "utf-8");
 
 function selectContents(element: Element) {
   const range = document.createRange();
@@ -33,6 +37,43 @@ function textNodeContaining(root: Node, text: string) {
     node = walker.nextNode();
   }
   throw new Error(`Could not find text node containing ${text}`);
+}
+
+function renderedVisualLines(root: Element) {
+  const lines = [""];
+  const visit = (node: Node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      lines[lines.length - 1] += node.textContent ?? "";
+      return;
+    }
+    if (node instanceof HTMLBRElement) {
+      lines.push("");
+      return;
+    }
+    Array.from(node.childNodes).forEach(visit);
+  };
+  Array.from(root.childNodes).forEach(visit);
+  return lines;
+}
+
+async function saveDiaryAndReadDescription(markup: string) {
+  const updateEvent = vi.fn().mockResolvedValue(event);
+  const user = userEvent.setup();
+  const { unmount } = render(<EventForm categories={[category]} event={event} updateEvent={updateEvent} uploadEventMedia={vi.fn()} onSaved={vi.fn()} />);
+  const diary = screen.getByLabelText("Diary");
+  diary.innerHTML = markup;
+  fireEvent.input(diary);
+  await user.click(screen.getByRole("button", { name: "Save Pawprint" }));
+  await waitFor(() => expect(updateEvent).toHaveBeenCalledTimes(1));
+  return { savedDescription: updateEvent.mock.calls[0][1].description as string, unmount, user };
+}
+
+async function reopenAndSaveDescription(savedDescription: string, user: ReturnType<typeof userEvent.setup>) {
+  const reopenedUpdate = vi.fn().mockResolvedValue(event);
+  render(<EventForm categories={[category]} event={{ ...event, description: savedDescription }} updateEvent={reopenedUpdate} uploadEventMedia={vi.fn()} onSaved={vi.fn()} />);
+  await user.click(screen.getByRole("button", { name: "Save Pawprint" }));
+  await waitFor(() => expect(reopenedUpdate).toHaveBeenCalledTimes(1));
+  return reopenedUpdate.mock.calls[0][1].description as string;
 }
 
 describe("EventForm", () => {
@@ -597,6 +638,176 @@ describe("EventForm", () => {
 
     await waitFor(() => expect(reopenedUpdate).toHaveBeenCalledTimes(1));
     expect(reopenedUpdate.mock.calls[0][1].description).toBe(savedDescription);
+  });
+
+  it("preserves a user-entered blank diary line after save, render, reopen, and second save", async () => {
+    const updateEvent = vi.fn().mockResolvedValue(event);
+    const user = userEvent.setup();
+    const { unmount } = render(<EventForm categories={[category]} event={event} updateEvent={updateEvent} uploadEventMedia={vi.fn()} onSaved={vi.fn()} />);
+    const diary = screen.getByLabelText("Diary");
+    diary.innerHTML = "<div>first line</div><div><br></div><div>third line</div>";
+    fireEvent.input(diary);
+    await user.click(screen.getByRole("button", { name: "Save Pawprint" }));
+
+    await waitFor(() => expect(updateEvent).toHaveBeenCalledTimes(1));
+    const savedDescription = updateEvent.mock.calls[0][1].description;
+    expect(savedDescription).toBe("first line\n\nthird line");
+
+    unmount();
+    render(<MarkdownDescription source={savedDescription} />);
+    const rendered = screen.getByTestId("markdown-description");
+    expect(rendered.querySelector("p")).toBeNull();
+    expect(renderedVisualLines(rendered)).toEqual(["first line", "", "third line"]);
+    expect(rendered).toHaveTextContent("first line");
+    expect(rendered).toHaveTextContent("third line");
+
+    cleanup();
+    const reopenedUpdate = vi.fn().mockResolvedValue(event);
+    render(<EventForm categories={[category]} event={{ ...event, description: savedDescription }} updateEvent={reopenedUpdate} uploadEventMedia={vi.fn()} onSaved={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Save Pawprint" }));
+
+    await waitFor(() => expect(reopenedUpdate).toHaveBeenCalledTimes(1));
+    expect(reopenedUpdate.mock.calls[0][1].description).toBe(savedDescription);
+  });
+
+  it("preserves multiple blank diary lines and formatting around paragraph boundaries", async () => {
+    const updateEvent = vi.fn().mockResolvedValue(event);
+    const user = userEvent.setup();
+    const { unmount } = render(<EventForm categories={[category]} event={event} updateEvent={updateEvent} uploadEventMedia={vi.fn()} onSaved={vi.fn()} />);
+    const diary = screen.getByLabelText("Diary");
+    diary.innerHTML = "<div><strong>bold</strong></div><div><br></div><div><br></div><div><em>italic</em></div><div><a href=\"https://example.com\">link</a></div>";
+    fireEvent.input(diary);
+    await user.click(screen.getByRole("button", { name: "Save Pawprint" }));
+
+    await waitFor(() => expect(updateEvent).toHaveBeenCalledTimes(1));
+    const savedDescription = updateEvent.mock.calls[0][1].description;
+    expect(savedDescription).toBe("**bold**\n\n\n*italic*\n[link](https://example.com)");
+
+    unmount();
+    const reopenedUpdate = vi.fn().mockResolvedValue(event);
+    render(<EventForm categories={[category]} event={{ ...event, description: savedDescription }} updateEvent={reopenedUpdate} uploadEventMedia={vi.fn()} onSaved={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Save Pawprint" }));
+
+    await waitFor(() => expect(reopenedUpdate).toHaveBeenCalledTimes(1));
+    expect(reopenedUpdate.mock.calls[0][1].description).toBe(savedDescription);
+  });
+
+  it("round-trips the real multiline Diary example through render, reopen, and second render unchanged", async () => {
+    const { savedDescription, unmount, user } = await saveDiaryAndReadDescription("要回新竹啦<div>希望可以抽到籤</div><div>a</div><div>a</div><div>a</div><div>a</div>");
+    expect(savedDescription).toBe("要回新竹啦\n希望可以抽到籤\na\na\na\na");
+
+    unmount();
+    render(<MarkdownDescription source={savedDescription} />);
+    const firstRender = screen.getByTestId("markdown-description");
+    expect(firstRender.querySelector("p")).toBeNull();
+    expect(firstRender.querySelectorAll("br")).toHaveLength(5);
+    expect(renderedVisualLines(firstRender)).toEqual(["要回新竹啦", "希望可以抽到籤", "a", "a", "a", "a"]);
+
+    cleanup();
+    render(<EventForm categories={[category]} event={{ ...event, description: savedDescription }} updateEvent={vi.fn().mockResolvedValue(event)} uploadEventMedia={vi.fn()} onSaved={vi.fn()} />);
+    expect(renderedVisualLines(screen.getByLabelText("Diary"))).toEqual(["要回新竹啦", "希望可以抽到籤", "a", "a", "a", "a"]);
+
+    cleanup();
+    const secondDescription = await reopenAndSaveDescription(savedDescription, user);
+    expect(secondDescription).toBe(savedDescription);
+
+    cleanup();
+    render(<MarkdownDescription source={secondDescription} />);
+    expect(renderedVisualLines(screen.getByTestId("markdown-description"))).toEqual(["要回新竹啦", "希望可以抽到籤", "a", "a", "a", "a"]);
+  });
+
+  it("keeps exactly one intentional blank Diary line stable through render and reopen", async () => {
+    const { savedDescription, unmount, user } = await saveDiaryAndReadDescription("第一行<div><br></div><div>第三行</div>");
+    expect(savedDescription).toBe("第一行\n\n第三行");
+
+    unmount();
+    render(<MarkdownDescription source={savedDescription} />);
+    expect(renderedVisualLines(screen.getByTestId("markdown-description"))).toEqual(["第一行", "", "第三行"]);
+
+    cleanup();
+    render(<EventForm categories={[category]} event={{ ...event, description: savedDescription }} updateEvent={vi.fn().mockResolvedValue(event)} uploadEventMedia={vi.fn()} onSaved={vi.fn()} />);
+    expect(renderedVisualLines(screen.getByLabelText("Diary"))).toEqual(["第一行", "", "第三行"]);
+
+    cleanup();
+    expect(await reopenAndSaveDescription(savedDescription, user)).toBe(savedDescription);
+  });
+
+  it("keeps exactly two intentional blank Diary lines stable through render and reopen", async () => {
+    const { savedDescription, unmount, user } = await saveDiaryAndReadDescription("第一行<div><br></div><div><br></div><div>第四行</div>");
+    expect(savedDescription).toBe("第一行\n\n\n第四行");
+
+    unmount();
+    render(<MarkdownDescription source={savedDescription} />);
+    expect(renderedVisualLines(screen.getByTestId("markdown-description"))).toEqual(["第一行", "", "", "第四行"]);
+
+    cleanup();
+    render(<EventForm categories={[category]} event={{ ...event, description: savedDescription }} updateEvent={vi.fn().mockResolvedValue(event)} uploadEventMedia={vi.fn()} onSaved={vi.fn()} />);
+    expect(renderedVisualLines(screen.getByLabelText("Diary"))).toEqual(["第一行", "", "", "第四行"]);
+
+    cleanup();
+    expect(await reopenAndSaveDescription(savedDescription, user)).toBe(savedDescription);
+  });
+
+  it("preserves exact formatted Diary line structure without leaking Markdown delimiters", async () => {
+    const { savedDescription, unmount, user } = await saveDiaryAndReadDescription("normal line<div><em>italic line</em></div><div><br></div><div><a href=\"https://example.com\">linked line</a></div><div><strong>bold line</strong></div>");
+    expect(savedDescription).toBe("normal line\n*italic line*\n\n[linked line](https://example.com)\n**bold line**");
+
+    unmount();
+    render(<MarkdownDescription source={savedDescription} />);
+    const rendered = screen.getByTestId("markdown-description");
+    expect(renderedVisualLines(rendered)).toEqual(["normal line", "italic line", "", "linked line", "bold line"]);
+    expect(screen.getByText("italic line").tagName.toLowerCase()).toBe("em");
+    expect(screen.getByRole("link", { name: "linked line" })).toHaveAttribute("href", "https://example.com");
+    expect(screen.getByText("bold line").tagName.toLowerCase()).toBe("strong");
+    expect(rendered).not.toHaveTextContent("*");
+    expect(rendered).not.toHaveTextContent("[");
+
+    cleanup();
+    render(<EventForm categories={[category]} event={{ ...event, description: savedDescription }} updateEvent={vi.fn().mockResolvedValue(event)} uploadEventMedia={vi.fn()} onSaved={vi.fn()} />);
+    expect(renderedVisualLines(screen.getByLabelText("Diary"))).toEqual(["normal line", "italic line", "", "linked line", "bold line"]);
+
+    cleanup();
+    expect(await reopenAndSaveDescription(savedDescription, user)).toBe(savedDescription);
+  });
+
+  it("preserves a normal break followed by one blank line from Chromium root-text and block DOM", async () => {
+    const { savedDescription, unmount, user } = await saveDiaryAndReadDescription("第一行<div>第二行</div><div><br></div><div>第三行</div>");
+    expect(savedDescription).toBe("第一行\n第二行\n\n第三行");
+
+    unmount();
+    render(<MarkdownDescription source={savedDescription} />);
+    expect(renderedVisualLines(screen.getByTestId("markdown-description"))).toEqual(["第一行", "第二行", "", "第三行"]);
+
+    cleanup();
+    render(<EventForm categories={[category]} event={{ ...event, description: savedDescription }} updateEvent={vi.fn().mockResolvedValue(event)} uploadEventMedia={vi.fn()} onSaved={vi.fn()} />);
+    expect(renderedVisualLines(screen.getByLabelText("Diary"))).toEqual(["第一行", "第二行", "", "第三行"]);
+
+    cleanup();
+    expect(await reopenAndSaveDescription(savedDescription, user)).toBe(savedDescription);
+  });
+
+  it("bounds the create Diary editor with internal vertical scrolling", () => {
+    render(<EventForm categories={[category]} createEvent={vi.fn()} uploadEventMedia={vi.fn()} onSaved={vi.fn()} />);
+    const diary = screen.getByLabelText("Diary");
+
+    expect(diary).toHaveClass("diary-editor");
+    expect(stylesSource).toMatch(/\.diary-editor\s*\{[^}]*height:\s*220px;[^}]*overflow-y:\s*auto;/s);
+    expect(stylesSource).toMatch(/\.diary-editor\s*\{[^}]*max-height:\s*280px;/s);
+  });
+
+  it("bounds the edit Diary editor without applying the bounded style to rendered Markdown", () => {
+    render(<EventForm categories={[category]} event={{ ...event, description: "saved" }} uploadEventMedia={vi.fn()} onSaved={vi.fn()} />);
+    const diary = screen.getByLabelText("Diary");
+
+    expect(diary).toHaveClass("diary-editor");
+
+    cleanup();
+    render(<MarkdownDescription source={"first\n\nthird"} />);
+    const rendered = screen.getByTestId("markdown-description");
+    expect(rendered).not.toHaveClass("diary-editor");
+    expect(stylesSource).not.toMatch(/\[data-testid="markdown-description"\]\s*\{[^}]*overflow-y:\s*auto;/s);
+    expect(rendered).toHaveTextContent("first");
+    expect(rendered).toHaveTextContent("third");
   });
 
   it("rejects diary descriptions over the 10000 character limit before saving", async () => {

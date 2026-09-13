@@ -108,7 +108,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
 .event-form label { display: grid; gap: 6px; color: var(--ink); font-size: 0.9rem; font-weight: 750; }
 .event-form input, .event-form select, .event-form textarea { width: 100%; min-height: 44px; border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; color: var(--ink); background: #fff; }
 .event-form textarea { min-height: 150px; resize: vertical; }
-.diary-editor { min-height: 150px; border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; background: #fff; white-space: pre-wrap; }
+.diary-editor { height: 220px; min-height: 150px; max-height: 280px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; background: #fff; white-space: pre-wrap; }
 .diary-editor em, [data-testid="markdown-description"] em { font-style: italic; }
 .diary-editor a, [data-testid="markdown-description"] a { color: var(--focus); font-weight: 700; text-decoration: underline; }
 .link-dialog-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 18px; background: rgba(36, 50, 45, 0.46); }
