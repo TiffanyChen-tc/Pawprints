@@ -9,6 +9,23 @@ const entries = [
   { id: "one", etag: "\"1\"", title: "Morning run", category_id: "cat", category_name: "Running", description: "**good**", mood: "good", location_name: "Park", latitude: null, longitude: null, occurred_at: "2026-09-09T00:00:00Z", timezone: "Asia/Taipei", local_date: "2026-09-09", version: 1 },
 ];
 
+function renderedVisualLines(root: Element) {
+  const lines = [""];
+  const visit = (node: Node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      lines[lines.length - 1] += node.textContent ?? "";
+      return;
+    }
+    if (node instanceof HTMLBRElement) {
+      lines.push("");
+      return;
+    }
+    Array.from(node.childNodes).forEach(visit);
+  };
+  Array.from(root.childNodes).forEach(visit);
+  return lines;
+}
+
 describe("TimelinePage", () => {
   it("removes an expanded image immediately after edit save returns to the timeline", async () => {
     const imageA = { id: "image-a", display_order: 1, mime_type: "image/jpeg", file_size: 10, created_at: "2026-09-09T00:00:00Z" };
@@ -262,5 +279,24 @@ describe("TimelinePage", () => {
     await screen.findByText("No Pawprints for this date yet.");
     await user.click(screen.getByRole("button", { name: "Today" }));
     expect(screen.getByLabelText("Timeline date")).toHaveValue("2026-09-09");
+  });
+
+  it("shows complete expanded Diary text with visible blank lines and no bounded editor styling", async () => {
+    const longDescription = ["first line", "", "third line", ...Array.from({ length: 20 }, (_, index) => `line ${index + 4}`)].join("\n");
+    const user = userEvent.setup();
+    render(<TimelinePage initialDate="2026-09-09" loadTimeline={vi.fn().mockResolvedValue([{ ...entries[1], description: longDescription }])} loadCategories={vi.fn().mockResolvedValue([])} loadMedia={vi.fn().mockResolvedValue([])} />);
+
+    await screen.findByText("Morning run");
+    await user.click(screen.getByRole("button", { name: /Morning run/ }));
+
+    const rendered = screen.getByTestId("markdown-description");
+    expect(rendered).not.toHaveClass("diary-editor");
+    expect(rendered.querySelector("p")).toBeNull();
+    expect(rendered.querySelectorAll("br")).toHaveLength(22);
+    expect(renderedVisualLines(rendered)).toEqual(["first line", "", "third line", ...Array.from({ length: 20 }, (_, index) => `line ${index + 4}`)]);
+    expect(rendered).toHaveTextContent("first line");
+    expect(rendered).toHaveTextContent("third line");
+    expect(rendered).toHaveTextContent("line 23");
+    expect(getComputedStyle(rendered).overflowY).not.toBe("auto");
   });
 });

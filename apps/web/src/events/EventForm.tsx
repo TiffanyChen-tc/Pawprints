@@ -136,9 +136,9 @@ function editorHtml(source: string) {
     .replace(/PAWPRINTS_LITERAL_(\d+)/g, (_match, index: string) => literals[Number(index)] ?? "");
 }
 
-function serializeEditor(node: Node): string {
+function serializeEditorNode(node: Node): string {
   if (node.nodeType === Node.TEXT_NODE) return escapeMarkdownText(node.textContent ?? "");
-  const content = Array.from(node.childNodes).map(serializeEditor).join("");
+  const content = Array.from(node.childNodes).map(serializeEditorNode).join("");
   if (!(node instanceof HTMLElement)) return content;
   if (node.tagName === "STRONG" || node.tagName === "B") return wrapMarkdownInline(content, "**");
   if (node.tagName === "EM" || node.tagName === "I") return wrapMarkdownInline(content, "*");
@@ -147,7 +147,34 @@ function serializeEditor(node: Node): string {
     const href = safeLinkUrl(node.getAttribute("href") ?? "");
     return href ? wrapMarkdownInline(content, "[", `](${markdownLinkDestination(href)})`) : content;
   }
+  if (node.tagName === "DIV" || node.tagName === "P") return `${content.replace(/\n$/, "")}\n`;
   return node.tagName === "BR" ? "\n" : content;
+}
+
+function serializeEditor(node: Node): string {
+  if (node instanceof HTMLElement && node.classList.contains("diary-editor")) {
+    const segments: string[] = [];
+    let inlineSegment = "";
+    const pushInlineSegment = () => {
+      if (inlineSegment.length > 0) {
+        segments.push(inlineSegment);
+        inlineSegment = "";
+      }
+    };
+    Array.from(node.childNodes).forEach((child) => {
+      const serialized = serializeEditorNode(child);
+      if (child instanceof HTMLElement && (child.tagName === "DIV" || child.tagName === "P")) {
+        pushInlineSegment();
+        segments.push(serialized.replace(/\n$/, ""));
+        return;
+      }
+      inlineSegment += serialized;
+    });
+    pushInlineSegment();
+    return segments.join("\n").replace(/\n$/, "");
+  }
+  const content = serializeEditorNode(node);
+  return content;
 }
 
 function closestFormat(node: Node, boundary: HTMLElement, tag: "strong" | "em" | "del") {
