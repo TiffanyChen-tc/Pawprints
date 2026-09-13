@@ -76,14 +76,14 @@ Create or modify these repository areas as tasks make them real:
 
 - Each Python package/service has its own `pyproject.toml` with runtime and test dependencies. Test extras include `pytest`, `pytest-cov`, `httpx`, and service-specific helpers.
 - Every backend service image uses the repository root as Docker build context. Each Dockerfile copies and installs `packages/pawprints-common` first, then copies and installs the service package; common remains internal and unpublished.
-- Local Python RED/GREEN commands run after installing dependencies with the service/package Python interpreter, for example `python -m pip install -e packages/pawprints-common[dev] -e services/auth[dev]` for Auth work.
-- Service integration tests that need PostgreSQL, transactions, views, advisory locks, or concurrency run from the host against loopback-exposed `postgres-test` at `127.0.0.1:55432`, not SQLite and not the persistent demo database.
-- Analytics cache tests run from the host against loopback-exposed `redis-test` at `127.0.0.1:56379` when Redis behavior matters. Pure cache-key formatting tests may run without Redis.
+- Local Python RED/GREEN commands run inside service-isolated disposable Docker images after installing package dependencies, for example with common and the target service installed in the service test image.
+- Service integration tests that need PostgreSQL, transactions, views, advisory locks, or concurrency run from disposable Docker test containers against `postgres-test` on the Compose network, not SQLite and not the persistent demo database.
+- Analytics cache tests run from disposable Docker test containers against `redis-test` on the Compose network when Redis behavior matters. Pure cache-key formatting tests may run without Redis.
 - Frontend RED/GREEN commands run after `npm ci` in `apps/web`, and `package-lock.json` is committed.
-- Local RED/GREEN backend commands set explicit host-reachable test URLs before pytest, for example `AUTH_DATABASE_URL=postgresql+psycopg://pawprints_auth_rw:test_auth@127.0.0.1:55432/pawprints_test`; they must never connect to `postgres:5432/pawprints` or mutate persistent demo data.
-- `dev.ps1 test` starts isolated test infrastructure, waits healthy, runs Auth/Event/Media migrations against `pawprints_test`, executes common/backend pytest suites against loopback test URLs, executes frontend tests that exist, tears down test containers/volumes for that test run, and preserves a nonzero exit code on failure.
+- Local RED/GREEN backend commands set explicit Compose-network test URLs before pytest, for example `AUTH_DATABASE_URL=postgresql+psycopg://pawprints_auth_rw:test_auth@postgres-test:5432/pawprints_test`; they must never connect to `postgres:5432/pawprints` or mutate persistent demo data.
+- `dev.ps1 test` starts isolated test infrastructure, waits healthy, runs Auth/Event/Media migrations against `pawprints_test`, executes common/backend pytest suites from disposable Docker containers against Compose-network test URLs, executes frontend tests that exist in Node 22, tears down test containers/volumes for that test run, and preserves a nonzero exit code on failure.
 - `dev.ps1` checks every required native command's exit code. Docker Compose, Python/Alembic/pytest, npm, smoke, start, migrate, and demo paths must never return exit code 0 after a required native command fails.
-- Tests are host-runner tests. Do not add per-service Compose test-runner services unless the plan is explicitly revised later.
+- Tests are disposable-container tests. Do not add permanent per-service Compose test-runner services unless the plan is explicitly revised later.
 
 ---
 
@@ -660,7 +660,7 @@ Expected: FAIL before `passwords.py` exists.
 
 - [ ] **Step 3: Implement Argon2id password handling**
 
-Use `pwdlib.PasswordHash.recommended()` or equivalent Argon2id library API. Enforce exact policy: min 12, max 128, reject empty/all-whitespace, no composition rules, no trimming.
+Use `pwdlib.PasswordHash.recommended()` or equivalent Argon2id library API. Enforce exact policy: min 6, max 128, reject empty/all-whitespace, no composition rules, no trimming.
 
 - [ ] **Step 4: Write Auth API tests**
 
