@@ -188,7 +188,7 @@ Daily Timeline queries use user_id + local_date and order by occurred_at ascendi
 
 Accounts use email + password only, with optional display_name. Registration requires email/password, may accept display name, creates a user, establishes a login session, sets the refresh cookie, and returns an access token plus user.
 
-Passwords use Argon2id through a mature library such as pwdlib. Policy: minimum 12 characters, maximum 128 characters, reject empty/all-whitespace passwords, no composition rules. Passwords are exact secrets: do not lowercase or trim them. Store only password hashes. Opportunistic password rehash after successful login is desirable if supported by the library.
+Passwords use Argon2id through a mature library such as pwdlib. Policy: minimum 6 characters, maximum 128 characters, reject empty/all-whitespace passwords, no composition rules. Passwords are exact secrets: do not lowercase or trim them. Store only password hashes. Opportunistic password rehash after successful login is desirable if supported by the library.
 
 Access JWTs:
 
