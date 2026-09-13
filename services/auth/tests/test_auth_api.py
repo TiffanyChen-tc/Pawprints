@@ -10,7 +10,7 @@ def test_register_creates_session_sets_cookie_and_returns_access_token(client):
         "/api/v1/auth/register",
         json={
             "email": " User@Example.COM ",
-            "password": "correct horse battery",
+            "password": "demo123",
             "display_name": "User",
         },
     )
@@ -26,6 +26,46 @@ def test_register_creates_session_sets_cookie_and_returns_access_token(client):
     assert body["user"]["email"] == "user@example.com"
     assert body["user"]["display_name"] == "User"
     assert jwt.get_unverified_header(body["access_token"])["alg"] == "RS256"
+
+
+def test_register_accepts_six_character_password(client):
+    response = client.post(
+        "/api/v1/auth/register",
+        json={"email": "six@example.com", "password": "demo12", "display_name": None},
+    )
+
+    assert response.status_code == 201
+
+
+def test_register_rejects_five_character_password(client):
+    response = client.post(
+        "/api/v1/auth/register",
+        json={"email": "five@example.com", "password": "short", "display_name": None},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_failed"
+
+
+def test_register_rejects_password_over_existing_maximum(client):
+    response = client.post(
+        "/api/v1/auth/register",
+        json={"email": "long@example.com", "password": "a" * 129, "display_name": None},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_failed"
+
+
+def test_register_does_not_trim_passwords(client):
+    registered = client.post(
+        "/api/v1/auth/register",
+        json={"email": "space@example.com", "password": " demo1 ", "display_name": None},
+    )
+
+    assert registered.status_code == 201
+    assert login_user(client, email="space@example.com", password="demo1").status_code == 401
+    assert login_user(client, email="space@example.com", password=" demo1 ").status_code == 200
 
 
 def test_register_normalizes_email_without_provider_specific_rewriting(client):

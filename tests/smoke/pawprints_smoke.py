@@ -151,17 +151,27 @@ def main() -> None:
     assert "Pawprints" in home, "React shell did not render Pawprints"
     client.request("GET", "/metrics", expected=404)
 
+    email = unique_email()
+    password = "CorrectHorseBatteryStaple1!"
     _, _, session = client.json_request(
         "POST",
         "/api/v1/auth/register",
         payload={
-            "email": unique_email(),
-            "password": "CorrectHorseBatteryStaple1!",
+            "email": email,
+            "password": password,
             "display_name": "Smoke Tester",
         },
         expected=201,
     )
-    token = session["access_token"]
+    assert session["user"]["email"] == email, "register did not establish the expected user session"
+
+    _, _, login_session = client.json_request(
+        "POST",
+        "/api/v1/auth/login",
+        payload={"email": email, "password": password},
+    )
+    token = login_session["access_token"]
+    assert login_session["user"]["id"] == session["user"]["id"], "login did not establish the registered session"
 
     _, _, category = client.json_request(
         "POST",
@@ -190,7 +200,7 @@ def main() -> None:
             "category_id": category_id,
             "local_datetime": f"{event_date}T09:30:00",
             "timezone": "Asia/Taipei",
-            "description": "Created by Task 5 smoke.",
+            "description": "Created by Pawprints public-boundary smoke.",
             "mood": "good",
             "location_name": "Pawprints smoke",
             "latitude": 25.0330,

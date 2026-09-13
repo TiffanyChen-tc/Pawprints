@@ -253,6 +253,23 @@ services:
     working_dir: /smoke
     command: ["python", "pawprints_smoke.py"]
 
+  seed:
+    profiles: ["jobs"]
+    image: python:3.12-slim
+    depends_on:
+      nginx:
+        condition: service_healthy
+    environment:
+      PAWPRINTS_BASE_URL: http://nginx
+      PAWPRINTS_DEMO_EMAIL: ${PAWPRINTS_DEMO_EMAIL:-demo@pawprints.local}
+      PAWPRINTS_DEMO_PASSWORD: ${PAWPRINTS_DEMO_PASSWORD:-demo123}
+      PAWPRINTS_DEMO_DISPLAY_NAME: ${PAWPRINTS_DEMO_DISPLAY_NAME:-Pawprints Demo}
+      PAWPRINTS_DEMO_ANCHOR_DATE: ${PAWPRINTS_DEMO_ANCHOR_DATE:-2026-09-13}
+    volumes:
+      - ./demo:/demo:ro
+    working_dir: /demo
+    command: ["python", "seed.py"]
+
   redis-test:
     image: redis:7-alpine
     profiles: ["test"]

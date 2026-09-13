@@ -12,9 +12,12 @@ def test_dev_test_uses_disposable_service_isolated_python_containers():
 
     assert "Invoke-Checked python -m alembic" not in script
     assert "Invoke-Checked python -m pytest" not in script
+    assert "Invoke-Checked docker compose" not in script
     assert "Invoke-Checked docker run" not in script
     assert "Invoke-Checked docker build" not in script
-    assert script.count("Invoke-Checked -FilePath docker -Arguments @(") == 14
+    assert script.count("Invoke-Checked -FilePath docker -Arguments @(") == 21
+    assert '$arguments = @("compose", "up", "--build", "-d", "--wait") + $present' in script
+    assert "Invoke-Checked -FilePath docker -Arguments $arguments" in script
     assert script.count('"-w", "/repo"') == 8
     assert "--network host" not in script
     assert '$testNetwork = "$(Get-ComposeProjectName)_default"' in script

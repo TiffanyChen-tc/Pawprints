@@ -322,6 +322,22 @@ describe("auth shell", () => {
     });
   });
 
+  it("keeps register password validation aligned with the backend six-character minimum", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        authError(401, "invalid_refresh_token", "Refresh session is invalid."),
+      ),
+    );
+    renderApp("/register");
+    await screen.findByRole("heading", { name: "Create your account" });
+
+    const password = screen.getByLabelText("Password");
+    expect(password).toHaveAttribute("minLength", "6");
+    expect(password).toHaveAttribute("maxLength", "128");
+    expect(screen.getByText("Use 6 to 128 characters.")).toBeInTheDocument();
+  });
+
   it("surfaces safe registration errors and restores the enabled form", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) =>
       requestPath(input).endsWith("/refresh")
